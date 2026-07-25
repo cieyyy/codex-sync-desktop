@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
+
+
+MACOS_COMMAND_PATHS = (
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/local/bin",
+)
 
 
 @dataclass
@@ -14,15 +23,28 @@ class CommandResult:
     returncode: int
 
 
+def command_environment(
+    environ: Mapping[str, str] | None = None,
+    platform_name: str | None = None,
+) -> dict[str, str]:
+    env = dict(os.environ if environ is None else environ)
+    entries = [item for item in env.get("PATH", "").split(os.pathsep) if item]
+    if (platform_name or sys.platform) == "darwin":
+        entries = [*MACOS_COMMAND_PATHS, *entries]
+    env["PATH"] = os.pathsep.join(dict.fromkeys(entries))
+    return env
+
+
 def command_available(name: str) -> bool:
-    return shutil.which(name) is not None
+    env = command_environment()
+    return shutil.which(name, path=env.get("PATH")) is not None
 
 
 def run(command: Sequence[str], cwd: Path | None = None, timeout: int = 120) -> CommandResult:
     try:
         result = subprocess.run(
             list(command), cwd=str(cwd) if cwd else None, capture_output=True,
-            text=True, timeout=timeout, check=False,
+            text=True, timeout=timeout, check=False, env=command_environment(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return CommandResult(False, str(exc), 1)

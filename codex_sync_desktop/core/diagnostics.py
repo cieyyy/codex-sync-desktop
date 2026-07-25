@@ -24,6 +24,7 @@ def collect_diagnostics(codex_home: Path, vault: Path | None = None) -> Dict[str
         "databases": [str(path) for path in databases],
         "session_index": (codex_home / "session_index.jsonl").exists(),
         "git": command_available("git"),
+        "git_lfs": command_available("git-lfs"),
         "gh": command_available("gh"),
         "gh_authenticated": gh_status.ok,
         "running_processes": [{"pid": item.pid, "name": item.name} for item in processes],

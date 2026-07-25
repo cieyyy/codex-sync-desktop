@@ -218,6 +218,7 @@ class CodexSyncApp(tk.Tk):
             ("状态数据库", str(len(diagnostics["databases"])), ", ".join(Path(item).name for item in diagnostics["databases"]) or "未找到"),
             ("侧栏索引", "正常" if diagnostics["session_index"] else "缺失", "session_index.jsonl"),
             ("Git", "正常" if diagnostics["git"] else "缺失", "GitHub 仓库同步"),
+            ("Git LFS", "正常" if diagnostics["git_lfs"] else "缺失", "用于包含 Git LFS 钩子的同步仓库"),
             ("GitHub CLI", "已登录" if diagnostics["gh_authenticated"] else "未登录", "gh auth login" if not diagnostics["gh_authenticated"] else "认证可用"),
             ("相关进程", str(len(diagnostics["running_processes"])), ", ".join(item["name"] for item in diagnostics["running_processes"]) or "未检测到"),
             ("同步仓库", "正常" if diagnostics.get("vault_exists") else "未配置", str(self.settings.vault or "")),
