@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -27,7 +28,7 @@ def create_consistent_backup(codex_home: Path, backup_root: Path | None = None) 
     copied = []
     for source in find_state_databases(codex_home):
         destination = root / source.name
-        with sqlite3.connect(str(source)) as source_db, sqlite3.connect(str(destination)) as destination_db:
+        with closing(sqlite3.connect(str(source))) as source_db, closing(sqlite3.connect(str(destination))) as destination_db:
             source_db.backup(destination_db)
         copied.append(source.name)
     for name in INDEX_FILES:

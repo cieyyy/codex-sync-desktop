@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 
@@ -21,7 +22,7 @@ def write_session(root: Path, session_id: str, user_text: str = "Hello", assista
 def create_state_database(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     path = root / "state_5.sqlite"
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         connection.execute(
             """CREATE TABLE threads (
                 id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL,
@@ -37,4 +38,5 @@ def create_state_database(root: Path) -> Path:
                 name TEXT
             )"""
         )
+        connection.commit()
     return path

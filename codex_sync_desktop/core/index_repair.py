@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
@@ -78,7 +79,7 @@ def repair_indexes(codex_home: Path, mappings: Mapping[str, str] | None = None, 
         report.backup_dir = create_consistent_backup(codex_home)
     database = _select_database(databases)
     existing_names = _read_existing_names(codex_home / "session_index.jsonl")
-    with sqlite3.connect(str(database)) as connection:
+    with closing(sqlite3.connect(str(database))) as connection:
         connection.row_factory = sqlite3.Row
         db_names = {row["id"]: row["title"] for row in connection.execute("SELECT id, title FROM threads")}
         existing_names.update({key: value for key, value in db_names.items() if value})
@@ -183,7 +184,7 @@ def _select_database(paths: list[Path]) -> Path:
 
 def _has_threads_table(path: Path) -> bool:
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
             row = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='threads'").fetchone()
             return row is not None
     except sqlite3.Error:
