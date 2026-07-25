@@ -8,6 +8,38 @@ from tests.helpers import write_session
 
 
 class SessionSyncTests(unittest.TestCase):
+    def test_raw_destination_is_identical_to_its_sanitized_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            target_home = root / "target"
+            vault = root / "vault"
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            source = write_session(source_home, session_id, "Keep this text", "Answer")
+            export_sanitized_sessions(source_home, vault, "Office Mac")
+            destination = target_home / source.relative_to(source_home)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+            plan = plan_import(target_home, vault, "office-mac")
+            self.assertEqual(plan.counts, {"identical": 1})
+
+    def test_local_conversation_superset_is_not_a_conflict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            target_home = root / "target"
+            vault = root / "vault"
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            source = write_session(source_home, session_id, "First question", "First answer")
+            export_sanitized_sessions(source_home, vault, "Office Mac")
+            destination = target_home / source.relative_to(source_home)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+            with destination.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"timestamp": "2026-07-25T10:01:00Z", "type": "event_msg", "payload": {"type": "user_message", "message": "Follow-up"}}) + "\n")
+            plan = plan_import(target_home, vault, "office-mac")
+            self.assertEqual(plan.counts, {"identical": 1})
+
     def test_export_and_import_with_conflict_quarantine(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

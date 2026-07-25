@@ -108,7 +108,11 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
         if not destination.exists():
             plan.items.append(ImportItem("copy", relative, source, destination))
             continue
-        if sha256_file(destination) == actual_hash:
+        if (
+            sha256_file(destination) == actual_hash
+            or sanitized_sha256_file(destination) == actual_hash
+            or conversation_is_prefix(source, destination)
+        ):
             plan.items.append(ImportItem("identical", relative, source, destination))
             continue
         conflict_path = conflict_root / relative
@@ -133,6 +137,52 @@ def apply_import(plan: ImportPlan) -> Dict[str, Any]:
 
 
 def _sanitize_file(source: Path, destination: Path) -> Dict[str, Any]:
+    encoded, result = _sanitized_bytes(source)
+    result["changed"] = _write_if_changed(destination, encoded)
+    return result
+
+
+def sanitized_sha256_file(source: Path) -> str:
+    encoded, _ = _sanitized_bytes(source)
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def conversation_is_prefix(source: Path, destination: Path) -> bool:
+    incoming = conversation_signature(source)
+    local = conversation_signature(destination)
+    return bool(incoming) and len(incoming) <= len(local) and incoming == local[:len(incoming)]
+
+
+def conversation_signature(path: Path) -> list[tuple[str, str]]:
+    messages: list[tuple[str, str]] = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            try:
+                item = json.loads(raw_line)
+            except ValueError:
+                continue
+            payload = item.get("payload") or {}
+            role = ""
+            text = ""
+            if item.get("type") == "event_msg" and payload.get("type") in ("user_message", "agent_message"):
+                role = "user" if payload["type"] == "user_message" else "assistant"
+                text = str(payload.get("message") or "").strip()
+            elif item.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") in ("user", "assistant"):
+                role = str(payload["role"])
+                text = "\n".join(
+                    str(block.get("text") or "")
+                    for block in payload.get("content") or []
+                    if block.get("type") in ("input_text", "output_text")
+                ).strip()
+            if not text:
+                continue
+            message = (role, text)
+            if not messages or messages[-1] != message:
+                messages.append(message)
+    return messages
+
+
+def _sanitized_bytes(source: Path) -> tuple[bytes, Dict[str, Any]]:
     lines = []
     kept = omitted = invalid = media = secrets = 0
     with source.open("r", encoding="utf-8", errors="replace") as handle:
@@ -154,9 +204,8 @@ def _sanitize_file(source: Path, destination: Path) -> Dict[str, Any]:
             kept += 1
     encoded = "".join(lines).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
-    changed = _write_if_changed(destination, encoded)
-    return {
-        "bytes": len(encoded), "sha256": digest, "changed": changed,
+    return encoded, {
+        "bytes": len(encoded), "sha256": digest,
         "kept": kept, "omitted": omitted, "invalid": invalid,
         "media": media, "secrets": secrets,
     }
