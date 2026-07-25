@@ -12,14 +12,14 @@ jobs:
         include:
           - os: windows-latest
             artifact: Codex-Sync-Desktop-Windows
-          - os: macos-13
+          - os: macos-15-intel
             artifact: Codex-Sync-Desktop-macOS-Intel
           - os: macos-14
             artifact: Codex-Sync-Desktop-macOS-Apple-Silicon
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
