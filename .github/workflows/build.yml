@@ -54,7 +54,10 @@ jobs:
         with:
           path: artifacts
       - name: Generate checksums
-        run: find artifacts -type f -exec sha256sum {} \; | sed 's#  artifacts/[^/]*/#  #' | sort > artifacts/SHA256SUMS.txt
+        run: |
+          find artifacts -type f -exec sha256sum {} \; \
+            | sed 's#  artifacts/[^/]*/#  #' \
+            | sort > artifacts/SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
