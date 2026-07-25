@@ -27,10 +27,12 @@ def create_consistent_backup(codex_home: Path, backup_root: Path | None = None) 
     root.mkdir(parents=True, exist_ok=False)
     copied = []
     for source in find_state_databases(codex_home):
-        destination = root / source.name
+        relative = source.relative_to(codex_home)
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(str(source))) as source_db, closing(sqlite3.connect(str(destination))) as destination_db:
             source_db.backup(destination_db)
-        copied.append(source.name)
+        copied.append(relative.as_posix())
     for name in INDEX_FILES:
         source = codex_home / name
         if source.exists():
@@ -50,10 +52,14 @@ def restore_backup(codex_home: Path, backup_dir: Path, names: Iterable[str] | No
     allowed = set(names or json.loads(metadata.read_text(encoding="utf-8")).get("files", []))
     restored = []
     for name in allowed:
-        source = backup_dir / name
-        if not source.is_file() or Path(name).name != name:
+        relative = Path(str(name))
+        if relative.is_absolute() or ".." in relative.parts:
             continue
-        destination = codex_home / name
+        source = backup_dir / relative
+        if not source.is_file():
+            continue
+        destination = codex_home / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         restored.append(destination)
     return restored

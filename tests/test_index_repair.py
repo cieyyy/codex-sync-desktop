@@ -5,12 +5,31 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from codex_sync_desktop.core.backups import restore_backup
+from codex_sync_desktop.core.backups import create_consistent_backup, restore_backup
 from codex_sync_desktop.core.index_repair import repair_indexes
 from tests.helpers import create_state_database, write_session
 
 
 class IndexRepairTests(unittest.TestCase):
+    def test_backup_preserves_nested_database_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            nested = codex_home / "sqlite"
+            nested.mkdir(parents=True)
+            database = nested / "codex-dev.db"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("CREATE TABLE marker (value TEXT)")
+                connection.execute("INSERT INTO marker VALUES ('before')")
+                connection.commit()
+            backup = create_consistent_backup(codex_home)
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("UPDATE marker SET value='after'")
+                connection.commit()
+            restored = restore_backup(codex_home, backup)
+            self.assertIn(database, restored)
+            with closing(sqlite3.connect(database)) as connection:
+                self.assertEqual(connection.execute("SELECT value FROM marker").fetchone()[0], "before")
+
     def test_rebuilds_database_and_index_with_path_mapping(self):
         with tempfile.TemporaryDirectory() as directory:
             codex_home = Path(directory) / ".codex"

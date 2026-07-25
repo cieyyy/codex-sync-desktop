@@ -262,7 +262,7 @@ class CodexSyncApp(tk.Tk):
         if not root.exists():
             return
         for path in sorted((item for item in root.iterdir() if item.is_dir()), reverse=True):
-            files = len([item for item in path.iterdir() if item.is_file() and item.name != "backup.json"])
+            files = len([item for item in path.rglob("*") if item.is_file() and item.name != "backup.json"])
             self.backup_tree.insert("", "end", iid=str(path), values=(path.name, files, str(path)))
 
     def refresh_paths(self) -> None:

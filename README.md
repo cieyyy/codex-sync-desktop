@@ -65,6 +65,10 @@ GitHub Actions 会构建：
 
 源码运行没有第三方依赖。PyInstaller 仅在 GitHub Actions 构建机安装，不占用使用者本机开发磁盘。
 
+当前发布包使用临时签名，没有 Apple Developer/Windows 商业代码签名。macOS
+首次打开时可在 Finder 中右键应用并选择“打开”；Windows 可能显示 SmartScreen
+提示，应先核对下载来源和 Release 校验信息再选择运行。
+
 ## 安全说明
 
 - 只使用私有 GitHub 仓库存放会话。
