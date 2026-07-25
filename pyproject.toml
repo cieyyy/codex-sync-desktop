@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-sync-desktop"
+version = "0.1.0"
+description = "Lightweight desktop tool for safely synchronizing Codex conversation history"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "cieyyy"}]
+dependencies = []
+
+[project.gui-scripts]
+codex-sync-desktop = "codex_sync_desktop.app:main"
+
+[tool.setuptools.packages.find]
+include = ["codex_sync_desktop*"]
