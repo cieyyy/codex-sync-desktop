@@ -13,7 +13,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .git_client import CommandResult, command_available, command_environment, github_auth_status, run
+from .git_client import CommandResult, command_environment, github_auth_status, run
 
 
 GITHUB_SIGNUP_URL = "https://github.com/signup"
@@ -80,18 +80,25 @@ def check_github_connectivity(proxy_url: str = "", timeout: int = 12) -> Connect
 
 
 def github_setup_status(proxy_url: str = "") -> dict[str, object]:
+    git_probe = run(["git", "--version"], timeout=10, proxy_url=proxy_url)
+    gh_probe = run(["gh", "--version"], timeout=10, proxy_url=proxy_url)
+    authenticated = github_auth_status(proxy_url).ok if gh_probe.ok else False
     return {
-        "git": command_available("git"),
-        "gh": command_available("gh"),
-        "authenticated": github_auth_status(proxy_url).ok,
+        "git": git_probe.ok,
+        "gh": gh_probe.ok,
+        "authenticated": authenticated,
+        "git_reason": "" if git_probe.ok else _probe_reason(git_probe, "Git 未安装或无法启动"),
+        "gh_reason": "" if gh_probe.ok else _probe_reason(gh_probe, "GitHub CLI 未安装或无法启动"),
     }
 
 
 def launch_github_login(app_home: Path, proxy_url: str = "") -> Path | None:
     proxy = validate_proxy_url(proxy_url)
     gh_path = shutil.which("gh", path=command_environment().get("PATH"))
-    if not gh_path:
-        raise FileNotFoundError("未找到 GitHub CLI，请先安装后再登录")
+    gh_probe = run(["gh", "--version"], timeout=10, proxy_url=proxy)
+    if not gh_path or not gh_probe.ok:
+        detail = _probe_reason(gh_probe, "未找到 GitHub CLI")
+        raise FileNotFoundError(f"GitHub CLI 未安装或已损坏：{detail}。请点击“自动安装/修复必要工具”")
     app_home.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         escaped_gh = gh_path.replace("'", "''")
@@ -137,8 +144,8 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Path | Non
             escaped = proxy.replace("'", "''")
             prefix = f"$env:HTTP_PROXY='{escaped}'; $env:HTTPS_PROXY='{escaped}'; "
         command = (
-            f"{prefix}winget install --id Git.Git -e --accept-package-agreements --accept-source-agreements; "
-            "winget install --id GitHub.cli -e --accept-package-agreements --accept-source-agreements; "
+            f"{prefix}winget install --id Git.Git -e --force --accept-package-agreements --accept-source-agreements; "
+            "winget install --id GitHub.cli -e --force --accept-package-agreements --accept-source-agreements; "
             "Write-Host '安装结束。请重新打开 Codex Sync Desktop 后继续。' -ForegroundColor Green"
         )
         subprocess.Popen(["powershell.exe", "-NoExit", "-Command", command])
@@ -173,8 +180,15 @@ def create_private_repository(
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", name):
         raise ValueError("仓库名称只能包含字母、数字、点、横线和下划线，最长 100 个字符")
     proxy = validate_proxy_url(proxy_url)
-    if not command_available("git") or not command_available("gh"):
-        raise RuntimeError("需要先安装 Git 和 GitHub CLI")
+    git_probe = run(["git", "--version"], timeout=10, proxy_url=proxy)
+    gh_probe = run(["gh", "--version"], timeout=10, proxy_url=proxy)
+    if not git_probe.ok or not gh_probe.ok:
+        missing = []
+        if not git_probe.ok:
+            missing.append(_probe_reason(git_probe, "Git 未安装或无法启动"))
+        if not gh_probe.ok:
+            missing.append(_probe_reason(gh_probe, "GitHub CLI 未安装或无法启动"))
+        raise RuntimeError("必要工具不可用：" + "；".join(missing))
     auth = github_auth_status(proxy)
     if not auth.ok:
         raise RuntimeError("GitHub 尚未登录，请先点击“打开 GitHub 登录”")
@@ -232,3 +246,8 @@ def _require_ok(result: CommandResult, label: str) -> None:
     if not result.ok:
         detail = result.output.strip().splitlines()[-1] if result.output.strip() else "未知错误"
         raise RuntimeError(f"{label}：{detail}")
+
+
+def _probe_reason(result: CommandResult, fallback: str) -> str:
+    detail = result.output.strip().splitlines()[-1] if result.output.strip() else fallback
+    return detail if len(detail) <= 160 else detail[:157] + "..."

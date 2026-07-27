@@ -121,7 +121,7 @@ class OnboardingWizard(tk.Toplevel):
         self.account_tree.pack(fill="both", expand=True)
         downloads = ttk.Frame(page, style="Panel.TFrame")
         downloads.pack(fill="x", pady=(12, 0))
-        ttk.Button(downloads, text="自动安装必要工具", style="Accent.TButton", command=self._install_dependencies).pack(side="left")
+        ttk.Button(downloads, text="自动安装/修复必要工具", style="Accent.TButton", command=self._install_dependencies).pack(side="left")
         ttk.Button(downloads, text="下载 Git", command=lambda: webbrowser.open(GIT_DOWNLOAD_URL)).pack(side="left")
         ttk.Button(downloads, text="下载 GitHub CLI", command=lambda: webbrowser.open(GH_DOWNLOAD_URL)).pack(side="left", padx=8)
 
@@ -239,8 +239,8 @@ class OnboardingWizard(tk.Toplevel):
         self.account_status = status
         self.account_tree.delete(*self.account_tree.get_children())
         rows = (
-            ("Git", status.get("git"), "缺失时点击下方“下载 Git”"),
-            ("GitHub CLI", status.get("gh"), "缺失时点击下方“下载 GitHub CLI”"),
+            ("Git", status.get("git"), status.get("git_reason") or "点击下方“自动安装/修复必要工具”"),
+            ("GitHub CLI", status.get("gh"), status.get("gh_reason") or "点击下方“自动安装/修复必要工具”"),
             ("GitHub 登录", status.get("authenticated"), "未登录时点击“打开 GitHub 登录”"),
         )
         for label, ok, action in rows:

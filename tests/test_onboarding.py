@@ -7,7 +7,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from codex_sync_desktop.core.git_client import CommandResult
-from codex_sync_desktop.core.onboarding import create_private_repository, validate_proxy_url
+from codex_sync_desktop.core.onboarding import create_private_repository, github_setup_status, validate_proxy_url
 
 
 class ProxyValidationTests(TestCase):
@@ -23,11 +23,12 @@ class ProxyValidationTests(TestCase):
 
 class PrivateRepositorySetupTests(TestCase):
     @patch("codex_sync_desktop.core.onboarding.github_auth_status")
-    @patch("codex_sync_desktop.core.onboarding.command_available", return_value=True)
     @patch("codex_sync_desktop.core.onboarding.run")
-    def test_resumes_existing_local_clone_of_same_private_repository(self, mocked_run, _available, mocked_auth):
+    def test_resumes_existing_local_clone_of_same_private_repository(self, mocked_run, mocked_auth):
         mocked_auth.return_value = CommandResult(True, "", 0)
         mocked_run.side_effect = [
+            CommandResult(True, "git version 2.50", 0),
+            CommandResult(True, "gh version 2.75", 0),
             CommandResult(True, json.dumps({"login": "buyer", "id": 123}), 0),
             CommandResult(True, "exists", 0),
             CommandResult(True, json.dumps({"isPrivate": True, "url": "https://github.com/buyer/codex-sync-vault"}), 0),
@@ -46,11 +47,12 @@ class PrivateRepositorySetupTests(TestCase):
         self.assertNotIn(["git", "clone", "https://github.com/buyer/codex-sync-vault.git", str(target.resolve())], commands)
 
     @patch("codex_sync_desktop.core.onboarding.github_auth_status")
-    @patch("codex_sync_desktop.core.onboarding.command_available", return_value=True)
     @patch("codex_sync_desktop.core.onboarding.run")
-    def test_creates_verifies_and_clones_private_repository(self, mocked_run, _available, mocked_auth):
+    def test_creates_verifies_and_clones_private_repository(self, mocked_run, mocked_auth):
         mocked_auth.return_value = CommandResult(True, "logged in", 0)
         mocked_run.side_effect = [
+            CommandResult(True, "git version 2.50", 0),
+            CommandResult(True, "gh version 2.75", 0),
             CommandResult(True, json.dumps({"login": "buyer", "id": 123}), 0),
             CommandResult(False, "not found", 1),
             CommandResult(True, "created", 0),
@@ -71,10 +73,11 @@ class PrivateRepositorySetupTests(TestCase):
         self.assertLess(commands.index(["gh", "auth", "setup-git"]), commands.index(["git", "clone", "https://github.com/buyer/codex-sync-vault.git", str(target.resolve())]))
 
     @patch("codex_sync_desktop.core.onboarding.github_auth_status", return_value=CommandResult(True, "", 0))
-    @patch("codex_sync_desktop.core.onboarding.command_available", return_value=True)
     @patch("codex_sync_desktop.core.onboarding.run")
-    def test_refuses_public_repository(self, mocked_run, _available, _auth):
+    def test_refuses_public_repository(self, mocked_run, _auth):
         mocked_run.side_effect = [
+            CommandResult(True, "git version 2.50", 0),
+            CommandResult(True, "gh version 2.75", 0),
             CommandResult(True, json.dumps({"login": "buyer", "id": 123}), 0),
             CommandResult(True, "exists", 0),
             CommandResult(True, json.dumps({"isPrivate": False, "url": "https://github.com/buyer/public"}), 0),
@@ -86,3 +89,21 @@ class PrivateRepositorySetupTests(TestCase):
     def test_rejects_unsafe_repository_name(self):
         with self.assertRaises(ValueError):
             create_private_repository(Path("vault"), "bad/name")
+
+
+class ToolProbeTests(TestCase):
+    @patch("codex_sync_desktop.core.onboarding.github_auth_status")
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_broken_command_link_is_reported_as_unavailable(self, mocked_run, mocked_auth):
+        mocked_run.side_effect = [
+            CommandResult(True, "git version 2.50", 0),
+            CommandResult(False, "The system cannot execute the specified program", 1),
+        ]
+
+        status = github_setup_status()
+
+        self.assertTrue(status["git"])
+        self.assertFalse(status["gh"])
+        self.assertFalse(status["authenticated"])
+        self.assertIn("cannot execute", status["gh_reason"])
+        mocked_auth.assert_not_called()
