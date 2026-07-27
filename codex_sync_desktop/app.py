@@ -18,7 +18,7 @@ from typing import Any, Callable
 from . import __version__
 from .core.backups import create_consistent_backup, restore_backup
 from .core.config import Settings, SettingsStore, default_app_home, device_slug
-from .core.diagnostics import collect_diagnostics, diagnostics_json
+from .core.diagnostics import collect_diagnostics, diagnostics_json, remediation_text
 from .core.git_client import VaultGit
 from .core.index_repair import repair_indexes
 from .core.processes import running_codex_processes
@@ -41,6 +41,7 @@ class CodexSyncApp(tk.Tk):
         self.settings = self.store.load()
         self.messages: queue.Queue = queue.Queue()
         self.active_plan = None
+        self.last_diagnostics: dict[str, Any] | None = None
         self._busy = False
         self.title(f"Codex Sync Desktop {__version__}")
         self.geometry("1040x720")
@@ -129,6 +130,7 @@ class CodexSyncApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 10))
         ttk.Button(toolbar, text="刷新检查", command=self.refresh_all).pack(side="left")
         ttk.Button(toolbar, text="打开 Codex 目录", command=lambda: self._open_path(self.settings.codex_path)).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="查看解决办法", command=self.show_remediation).pack(side="left")
         self.overview_tree = self._tree(self.overview_tab, ("item", "status", "detail"), (180, 120, 590))
 
     def _build_sync(self) -> None:
@@ -226,17 +228,34 @@ class CodexSyncApp(tk.Tk):
         )
 
     def _show_overview(self, diagnostics: dict[str, Any]) -> None:
+        self.last_diagnostics = diagnostics
         self.overview_tree.delete(*self.overview_tree.get_children())
+        lfs_required = diagnostics.get("git_lfs_required", False)
+        lfs_status = "正常" if diagnostics["git_lfs"] else ("缺失（必需）" if lfs_required else "未安装（可选）")
+        lfs_detail = "Git LFS 可用" if diagnostics["git_lfs"] else (
+            "打开“查看解决办法”安装 Git LFS" if lfs_required else "当前仓库未检测到 LFS，可以不处理"
+        )
+        if diagnostics.get("gh_authenticated"):
+            gh_status, gh_detail = "已登录", "认证可用"
+        elif diagnostics.get("gh"):
+            gh_status, gh_detail = "未登录（可选）", "执行 gh auth login；Git 能同步时可不处理"
+        else:
+            gh_status, gh_detail = "未安装（可选）", "Git 能同步时可不安装；命令见“查看解决办法”"
+        git_detail = "Git 可用" if diagnostics["git"] else "同步必需；安装命令见“查看解决办法”"
+        codex_detail = diagnostics["codex_home"] if diagnostics["codex_home_exists"] else "在“设置”中选择当前用户的 .codex 目录"
+        database_detail = ", ".join(Path(item).name for item in diagnostics["databases"]) or "先启动一次 Codex，再刷新检查"
+        index_detail = "session_index.jsonl" if diagnostics["session_index"] else "导入后执行“导入并修复归档”，或使用 Codex++ 修复"
+        vault_detail = str(self.settings.vault or "") if diagnostics.get("vault_exists") else "在“设置”中选择或克隆同步仓库"
         rows = [
-            ("Codex 数据目录", "正常" if diagnostics["codex_home_exists"] else "未找到", diagnostics["codex_home"]),
+            ("Codex 数据目录", "正常" if diagnostics["codex_home_exists"] else "未找到", codex_detail),
             ("本机会话", str(diagnostics["sessions"]), "JSONL 会话文件"),
-            ("状态数据库", str(len(diagnostics["databases"])), ", ".join(Path(item).name for item in diagnostics["databases"]) or "未找到"),
-            ("侧栏索引", "正常" if diagnostics["session_index"] else "缺失", "session_index.jsonl"),
-            ("Git", "正常" if diagnostics["git"] else "缺失", "GitHub 仓库同步"),
-            ("Git LFS", "正常" if diagnostics["git_lfs"] else "缺失", "用于包含 Git LFS 钩子的同步仓库"),
-            ("GitHub CLI", "已登录" if diagnostics["gh_authenticated"] else "未登录", "gh auth login" if not diagnostics["gh_authenticated"] else "认证可用"),
+            ("状态数据库", str(len(diagnostics["databases"])), database_detail),
+            ("侧栏索引", "正常" if diagnostics["session_index"] else "缺失", index_detail),
+            ("Git", "正常" if diagnostics["git"] else "缺失（必需）", git_detail),
+            ("Git LFS", lfs_status, lfs_detail),
+            ("GitHub CLI", gh_status, gh_detail),
             ("相关进程", str(len(diagnostics["running_processes"])), ", ".join(item["name"] for item in diagnostics["running_processes"]) or "未检测到"),
-            ("同步仓库", "正常" if diagnostics.get("vault_exists") else "未配置", str(self.settings.vault or "")),
+            ("同步仓库", "正常" if diagnostics.get("vault_exists") else "未配置", vault_detail),
         ]
         for row in rows:
             self.overview_tree.insert("", "end", values=row)
@@ -250,6 +269,44 @@ class CodexSyncApp(tk.Tk):
                 refresh()
             except Exception:
                 self.logger.exception("刷新%s失败", label)
+
+    def show_remediation(self) -> None:
+        diagnostics = self.last_diagnostics or {
+            "platform": "Windows" if os.name == "nt" else sys.platform,
+            "codex_home_exists": self.settings.codex_path.exists(),
+            "databases": [],
+            "session_index": False,
+            "git": False,
+            "git_lfs": False,
+            "git_lfs_required": False,
+            "gh": False,
+            "gh_authenticated": False,
+            "vault_exists": bool(self.settings.vault and self.settings.vault.exists()),
+        }
+        content = remediation_text(diagnostics)
+        dialog = tk.Toplevel(self)
+        dialog.title("环境缺失项解决办法")
+        dialog.geometry("780x520")
+        dialog.minsize(620, 420)
+        body = ttk.Frame(dialog, padding=14)
+        body.pack(fill="both", expand=True)
+        text = tk.Text(body, wrap="word", font=("TkFixedFont", 10), padx=10, pady=10)
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scrollbar.set)
+        text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        text.insert("1.0", content)
+        text.configure(state="disabled")
+        buttons = ttk.Frame(dialog, padding=(14, 0, 14, 14))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="复制全部命令", command=lambda: self._copy_text(content)).pack(side="left")
+        ttk.Button(buttons, text="关闭", command=dialog.destroy).pack(side="right")
+
+    def _copy_text(self, content: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.update_idletasks()
+        self.busy_label.configure(text="已复制")
 
     def refresh_devices(self) -> None:
         self.devices_tree.delete(*self.devices_tree.get_children())

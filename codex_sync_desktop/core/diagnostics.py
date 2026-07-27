@@ -23,6 +23,68 @@ def platform_description() -> str:
         return sys.platform
 
 
+def vault_uses_lfs(vault: Path | None) -> bool:
+    if not vault or not vault.exists():
+        return False
+    try:
+        attributes = (
+            path for path in vault.rglob(".gitattributes")
+            if ".git" not in path.relative_to(vault).parts
+        )
+        return any("filter=lfs" in path.read_text(encoding="utf-8", errors="replace") for path in attributes)
+    except OSError:
+        return False
+
+
+def remediation_text(diagnostics: Dict[str, Any]) -> str:
+    windows = str(diagnostics.get("platform", "")).startswith("Windows")
+    git_install = (
+        "winget install --id Git.Git -e --source winget"
+        if windows else "brew install git"
+    )
+    lfs_install = (
+        "winget install --id GitHub.GitLFS -e --source winget\ngit lfs install"
+        if windows else "brew install git-lfs\ngit lfs install"
+    )
+    gh_install = (
+        "winget install --id GitHub.cli -e --source winget\ngh auth login"
+        if windows else "brew install gh\ngh auth login"
+    )
+    sections = ["Codex Sync Desktop 环境解决办法", ""]
+    required = []
+    optional = []
+    if not diagnostics.get("codex_home_exists"):
+        required.append("Codex 数据目录：打开“设置”，将目录指向当前用户的 .codex 文件夹。")
+    if not diagnostics.get("databases"):
+        required.append("状态数据库：先启动一次 Codex；如果仍缺失，检查设置中的 Codex 数据目录。")
+    if not diagnostics.get("session_index"):
+        required.append("侧栏索引：完成会话导入后执行“导入并修复归档”，或使用 Codex++ 修复历史会话。")
+    if not diagnostics.get("git"):
+        required.append(f"Git（同步必需）：\n{git_install}")
+    if not diagnostics.get("vault_exists"):
+        required.append("同步仓库：打开“设置”，选择本地仓库；没有本地仓库时填写远程地址后初始化/克隆。")
+    if not diagnostics.get("git_lfs"):
+        label = "Git LFS（当前仓库必需）" if diagnostics.get("git_lfs_required") else "Git LFS（当前仓库未使用，可选）"
+        item = f"{label}：\n{lfs_install}"
+        (required if diagnostics.get("git_lfs_required") else optional).append(item)
+    if not diagnostics.get("gh"):
+        optional.append(f"GitHub CLI（可选，Git 已能拉取/推送时无需安装）：\n{gh_install}")
+    elif not diagnostics.get("gh_authenticated"):
+        optional.append("GitHub CLI（可选）：\ngh auth login\n如果 Git 已能正常 pull/push，可以不处理。")
+
+    sections.append("必须处理" if required else "必须处理：无")
+    for index, item in enumerate(required, 1):
+        sections.extend((f"{index}. {item}", ""))
+    if optional:
+        sections.append("可选项")
+        for index, item in enumerate(optional, 1):
+            sections.extend((f"{index}. {item}", ""))
+    if not windows:
+        sections.extend(("macOS 如果提示 brew: command not found，请先访问 https://brew.sh 安装 Homebrew。", ""))
+    sections.append("完成后关闭并重新打开本工具，再点击“刷新检查”。")
+    return "\n".join(sections).strip() + "\n"
+
+
 def collect_diagnostics(codex_home: Path, vault: Path | None = None) -> Dict[str, Any]:
     processes = running_codex_processes(os.getpid())
     sessions = sum(1 for _ in iter_session_files(codex_home)) if codex_home.exists() else 0
@@ -37,6 +99,7 @@ def collect_diagnostics(codex_home: Path, vault: Path | None = None) -> Dict[str
         "session_index": (codex_home / "session_index.jsonl").exists(),
         "git": command_available("git"),
         "git_lfs": command_available("git-lfs"),
+        "git_lfs_required": vault_uses_lfs(vault),
         "gh": command_available("gh"),
         "gh_authenticated": gh_status.ok,
         "running_processes": [{"pid": item.pid, "name": item.name} for item in processes],
