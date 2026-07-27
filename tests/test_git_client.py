@@ -46,7 +46,7 @@ class GitClientEnvironmentTests(unittest.TestCase):
             {"PATH": r"C:\Windows\System32", "ProgramFiles": r"C:\Program Files", "LOCALAPPDATA": r"C:\Users\Buyer\AppData\Local"},
             platform_name="win32",
         )
-        entries = env["PATH"].split(os.pathsep)
+        entries = env["PATH"].split(";")
         self.assertIn(r"C:\Program Files\Git\cmd", entries)
         self.assertIn(r"C:\Program Files\GitHub CLI", entries)
         self.assertIn(r"C:\Users\Buyer\AppData\Local\Microsoft\WinGet\Links", entries)

@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Mapping, Sequence
 
 
@@ -21,15 +21,15 @@ def windows_command_paths(environ: Mapping[str, str]) -> tuple[str, ...]:
     program_files = environ.get("ProgramFiles", r"C:\Program Files")
     local_app_data = environ.get("LOCALAPPDATA", "")
     candidates = [
-        str(Path(program_files) / "Git" / "cmd"),
-        str(Path(program_files) / "GitHub CLI"),
+        str(PureWindowsPath(program_files) / "Git" / "cmd"),
+        str(PureWindowsPath(program_files) / "GitHub CLI"),
     ]
     if local_app_data:
         candidates.extend(
             (
-                str(Path(local_app_data) / "Programs" / "Git" / "cmd"),
-                str(Path(local_app_data) / "Programs" / "GitHub CLI"),
-                str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links"),
+                str(PureWindowsPath(local_app_data) / "Programs" / "Git" / "cmd"),
+                str(PureWindowsPath(local_app_data) / "Programs" / "GitHub CLI"),
+                str(PureWindowsPath(local_app_data) / "Microsoft" / "WinGet" / "Links"),
             )
         )
     return tuple(candidates)
@@ -105,13 +105,14 @@ def command_environment(
     proxy_url: str = "",
 ) -> dict[str, str]:
     env = dict(os.environ if environ is None else environ)
-    entries = [item for item in env.get("PATH", "").split(os.pathsep) if item]
     selected_platform = platform_name or sys.platform
+    path_separator = ";" if selected_platform == "win32" else os.pathsep
+    entries = [item for item in env.get("PATH", "").split(path_separator) if item]
     if selected_platform == "darwin":
         entries = [*MACOS_COMMAND_PATHS, *entries]
     elif selected_platform == "win32":
         entries = [*windows_command_paths(env), *entries]
-    env["PATH"] = os.pathsep.join(dict.fromkeys(entries))
+    env["PATH"] = path_separator.join(dict.fromkeys(entries))
     if proxy_url:
         env["HTTP_PROXY"] = proxy_url
         env["HTTPS_PROXY"] = proxy_url
