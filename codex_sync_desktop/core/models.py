@@ -43,6 +43,8 @@ class ImportItem:
     source: Path
     destination: Path
     conflict_path: Optional[Path] = None
+    backup_path: Optional[Path] = None
+    merged_content: Optional[bytes] = None
     detail: str = ""
 
 

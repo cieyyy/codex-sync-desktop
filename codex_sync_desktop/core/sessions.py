@@ -18,7 +18,8 @@ def iter_session_files(codex_home: Path) -> Iterator[tuple[str, Path]]:
         if not root.exists():
             continue
         for path in sorted(root.rglob("*.jsonl")):
-            if path.is_file():
+            relative = path.relative_to(root)
+            if path.is_file() and (not relative.parts or relative.parts[0] not in ("sessions", "archived_sessions")):
                 yield root_name, path
 
 
@@ -60,11 +61,12 @@ def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -
         })
 
     manifest = {
-        "format": 2,
+        "format": 3,
         "device": device_name,
         "device_slug": slug,
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "content": "user/assistant text and minimal session metadata; media, tools, credentials, and internal reasoning omitted",
+        "content": "complete textual Codex session records; inline media and binary attachments omitted; sensitive fields preserved",
+        "conflict_policy": "merge by semantic content and timestamp; preserve richer duplicate records",
         "sessions": manifest_sessions,
     }
     manifest_path = device_root / "manifest.json"
@@ -91,7 +93,9 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
         raise ValueError(f"Invalid manifest: {manifest_path}")
     format_version = int(manifest.get("format", 1))
     source_root = device_root / "sessions"
-    conflict_root = codex_home / "import-conflicts" / _timestamp_slug() / source_device
+    timestamp = _timestamp_slug()
+    conflict_root = codex_home / "import-conflicts" / timestamp / source_device
+    backup_root = codex_home / "import-backups" / timestamp
     plan = ImportPlan(source_device=source_device)
 
     for entry in entries:
@@ -115,8 +119,18 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
         ):
             plan.items.append(ImportItem("identical", relative, source, destination))
             continue
+        merged_content, merge = _merge_session_bytes(destination, source)
+        if merge["changes_from_source"] == 0:
+            plan.items.append(ImportItem("identical", relative, source, destination, detail="semantic match"))
+            continue
         conflict_path = conflict_root / relative
-        plan.items.append(ImportItem("conflict", relative, source, destination, conflict_path=conflict_path))
+        backup_path = backup_root / relative
+        plan.items.append(ImportItem(
+            "conflict", relative, source, destination,
+            conflict_path=conflict_path, backup_path=backup_path,
+            merged_content=merged_content,
+            detail=f"merge {merge['source_additions']} additions and {merge['source_replacements']} richer records",
+        ))
     return plan
 
 
@@ -126,14 +140,20 @@ def apply_import(plan: ImportPlan) -> Dict[str, Any]:
         raise ValueError(f"Import source verification failed for {len(invalid)} file(s)")
     copied = []
     conflicts = []
+    merged = []
     for item in plan.items:
         if item.action == "copy":
             _copy_atomic(item.source, item.destination)
             copied.append(item.destination)
         elif item.action == "conflict" and item.conflict_path:
+            if not item.backup_path or item.merged_content is None:
+                raise ValueError(f"Missing merge data for {item.relative_path}")
+            _copy_atomic(item.destination, item.backup_path)
             _copy_atomic(item.source, item.conflict_path)
             conflicts.append(item.conflict_path)
-    return {"copied": copied, "conflicts": conflicts, "counts": plan.counts}
+            _write_atomic(item.destination, item.merged_content)
+            merged.append(item.destination)
+    return {"copied": copied, "conflicts": conflicts, "merged": merged, "counts": plan.counts}
 
 
 def _sanitize_file(source: Path, destination: Path) -> Dict[str, Any]:
@@ -211,6 +231,97 @@ def _sanitized_bytes(source: Path) -> tuple[bytes, Dict[str, Any]]:
     }
 
 
+def _merge_session_bytes(destination: Path, source: Path) -> tuple[bytes, Dict[str, int]]:
+    destination_records = _read_records(destination)
+    source_records = _read_records(source)
+    merged = [{"item": item, "sequence": index} for index, item in enumerate(destination_records)]
+    matches: Dict[str, list[int]] = {}
+    for index, record in enumerate(merged):
+        matches.setdefault(_semantic_key(record["item"]), []).append(index)
+
+    source_additions = 0
+    source_replacements = 0
+    sequence = len(merged)
+    for item in source_records:
+        key = _semantic_key(item)
+        indexes = matches.get(key) or []
+        if not indexes:
+            merged.append({"item": item, "sequence": sequence})
+            sequence += 1
+            source_additions += 1
+            continue
+        index = indexes.pop(0)
+        existing = merged[index]
+        if _record_size(item) > _record_size(existing["item"]):
+            merged[index] = {"item": item, "sequence": existing["sequence"]}
+            source_replacements += 1
+
+    merged.sort(key=lambda record: _record_sort_key(record["item"], record["sequence"]))
+    encoded = "".join(
+        json.dumps(record["item"], ensure_ascii=False, separators=(",", ":")) + "\n"
+        for record in merged
+    ).encode("utf-8")
+    return encoded, {
+        "source_additions": source_additions,
+        "source_replacements": source_replacements,
+        "changes_from_source": source_additions + source_replacements,
+    }
+
+
+def _read_records(path: Path) -> list[Dict[str, Any]]:
+    records = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(item, dict):
+                records.append(item)
+    return records
+
+
+def _semantic_key(item: Dict[str, Any]) -> str:
+    payload = item.get("payload") or {}
+    timestamp = str(item.get("timestamp") or payload.get("timestamp") or "")
+    item_type = str(item.get("type") or "")
+    payload_type = str(payload.get("type") or "")
+    if item_type == "session_meta":
+        return "session_meta"
+    if item_type == "event_msg" and payload_type in ("user_message", "agent_message"):
+        return _stable_json([timestamp or payload.get("message"), item_type, payload_type])
+    if item_type == "response_item" and payload_type == "message":
+        content = payload.get("content") or []
+        text = "\n".join(str(block.get("text") or block.get("content") or "") for block in content if isinstance(block, dict))
+        return _stable_json([timestamp or text, item_type, payload_type, payload.get("role")])
+    if "call_id" in payload:
+        return _stable_json([
+            timestamp, item_type, payload_type, payload.get("call_id"),
+            payload.get("name"), payload.get("arguments"), payload.get("output"),
+        ])
+    return _stable_json(item)
+
+
+def _record_sort_key(item: Dict[str, Any], sequence: int) -> tuple[int, float, int]:
+    metadata = 0 if item.get("type") == "session_meta" else 1
+    raw = item.get("timestamp") or (item.get("payload") or {}).get("timestamp") or ""
+    try:
+        timestamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        timestamp = float("inf")
+    return metadata, timestamp, sequence
+
+
+def _record_size(item: Dict[str, Any]) -> int:
+    return len(_stable_json(item).encode("utf-8"))
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _write_if_changed(destination: Path, content: bytes) -> bool:
     if destination.exists() and destination.read_bytes() == content:
         return False
@@ -219,6 +330,13 @@ def _write_if_changed(destination: Path, content: bytes) -> bool:
     temp.write_bytes(content)
     temp.replace(destination)
     return True
+
+
+def _write_atomic(destination: Path, content: bytes) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp = destination.with_name(destination.name + ".merge")
+    temp.write_bytes(content)
+    temp.replace(destination)
 
 
 def _copy_atomic(source: Path, destination: Path) -> None:

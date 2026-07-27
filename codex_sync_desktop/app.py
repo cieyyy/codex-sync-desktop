@@ -318,7 +318,7 @@ class CodexSyncApp(tk.Tk):
             return
         def work() -> str:
             report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
-            self.logger.info("已导出 %s 个会话，脱敏 %s 处凭据，移除 %s 个媒体块", report.sessions, report.secrets_redacted, report.media_removed)
+            self.logger.info("已导出 %s 个完整文字会话，保留敏感字段，移除 %s 个媒体或二进制块", report.sessions, report.media_removed)
             if self.settings.auto_push_after_export:
                 result = VaultGit(vault).commit_and_push(f"sync: update {device_slug(self.settings.device_name)}")
                 self._checked_git(result)
@@ -348,7 +348,7 @@ class CodexSyncApp(tk.Tk):
             names = ", ".join(f"{item.name} (PID {item.pid})" for item in processes)
             messagebox.showerror("需要退出相关程序", f"修复数据库前请退出 Codex、ChatGPT 和 Codex++。\n\n检测到：{names}")
             return
-        if not messagebox.askyesno("确认导入", "将创建一致性备份、追加新会话，并重建侧栏索引。冲突文件不会覆盖本机版本。是否继续？"):
+        if not messagebox.askyesno("确认导入", "将创建一致性备份、追加新会话，并按内容和时间合并冲突后重建侧栏索引。双方原文件都会保留备份。是否继续？"):
             return
         def work() -> str:
             if self.settings.auto_pull_before_import:
@@ -357,7 +357,7 @@ class CodexSyncApp(tk.Tk):
             result = apply_import(plan)
             repair = repair_indexes(self.settings.codex_path, self.settings.path_mappings, create_backup=True)
             self.active_plan = plan
-            return f"导入 {len(result['copied'])} 个会话，隔离 {len(result['conflicts'])} 个冲突；侧栏新增 {repair.inserted} 项。备份：{repair.backup_dir}"
+            return f"导入 {len(result['copied'])} 个会话，合并 {len(result['merged'])} 个冲突；侧栏新增 {repair.inserted} 项。备份：{repair.backup_dir}"
         self._run_task("导入并修复", work, self.refresh_all)
 
     def create_backup(self) -> None:
@@ -384,7 +384,7 @@ class CodexSyncApp(tk.Tk):
     def _show_import_plan(self, plan: Any) -> None:
         self.active_plan = plan
         self.import_tree.delete(*self.import_tree.get_children())
-        meanings = {"copy": "本机不存在，将追加", "identical": "内容相同，无需处理", "conflict": "同名内容不同，将隔离", "missing-source": "仓库缺少源文件", "invalid-source-hash": "文件未通过清单校验"}
+        meanings = {"copy": "本机不存在，将追加", "identical": "内容相同，无需处理", "conflict": "同名内容不同，将按内容和时间合并", "missing-source": "仓库缺少源文件", "invalid-source-hash": "文件未通过清单校验"}
         for action in ("copy", "identical", "conflict", "missing-source", "invalid-source-hash"):
             count = plan.counts.get(action, 0)
             self.import_tree.insert("", "end", values=(action, count, meanings[action]))

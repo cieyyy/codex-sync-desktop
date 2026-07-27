@@ -40,7 +40,7 @@ class SessionSyncTests(unittest.TestCase):
             plan = plan_import(target_home, vault, "office-mac")
             self.assertEqual(plan.counts, {"identical": 1})
 
-    def test_export_and_import_with_conflict_quarantine(self):
+    def test_export_and_import_with_conflict_merge(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source_home = root / "source"
@@ -50,14 +50,14 @@ class SessionSyncTests(unittest.TestCase):
             source = write_session(source_home, session_id, "password=super-secret-value")
             report = export_sanitized_sessions(source_home, vault, "Office Mac")
             self.assertEqual(report.sessions, 1)
-            self.assertGreaterEqual(report.secrets_redacted, 1)
+            self.assertEqual(report.secrets_redacted, 0)
             plan = plan_import(target_home, vault, "office-mac")
             self.assertEqual(plan.counts, {"copy": 1})
             result = apply_import(plan)
             self.assertEqual(len(result["copied"]), 1)
             imported = result["copied"][0]
-            self.assertIn("[SECRET_REDACTED]", imported.read_text(encoding="utf-8"))
-            self.assertNotIn("function_call", imported.read_text(encoding="utf-8"))
+            self.assertIn("password=super-secret-value", imported.read_text(encoding="utf-8"))
+            self.assertIn("function_call", imported.read_text(encoding="utf-8"))
 
             source.write_text(source.read_text(encoding="utf-8") + json.dumps({"type": "event_msg", "payload": {"type": "user_message", "message": "new"}}) + "\n", encoding="utf-8")
             export_sanitized_sessions(source_home, vault, "Office Mac")
@@ -65,7 +65,11 @@ class SessionSyncTests(unittest.TestCase):
             self.assertEqual(conflict_plan.counts, {"conflict": 1})
             conflict_result = apply_import(conflict_plan)
             self.assertEqual(len(conflict_result["conflicts"]), 1)
+            self.assertEqual(len(conflict_result["merged"]), 1)
             self.assertTrue(conflict_result["conflicts"][0].exists())
+            merged_text = conflict_result["merged"][0].read_text(encoding="utf-8")
+            self.assertIn("super-secret-value", merged_text)
+            self.assertIn('"message":"new"', merged_text)
 
     def test_rejects_modified_manifest_file(self):
         with tempfile.TemporaryDirectory() as directory:
