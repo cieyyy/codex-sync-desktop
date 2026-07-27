@@ -48,7 +48,14 @@ def run(command: Sequence[str], cwd: Path | None = None, timeout: int = 120) -> 
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return CommandResult(False, str(exc), 1)
-    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    output_parts = []
+    for part in (result.stdout, result.stderr):
+        if not isinstance(part, str):
+            continue
+        normalized = part.strip()
+        if normalized:
+            output_parts.append(normalized)
+    output = "\n".join(output_parts)
     return CommandResult(result.returncode == 0, output, result.returncode)
 
 

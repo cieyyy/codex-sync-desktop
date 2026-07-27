@@ -46,6 +46,16 @@ class GitClientEnvironmentTests(unittest.TestCase):
         expected_prefix = os.pathsep.join(("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", ""))
         self.assertTrue(child_env["PATH"].startswith(expected_prefix))
 
+    @patch("codex_sync_desktop.core.git_client.subprocess.run")
+    def test_run_accepts_missing_output_streams_in_windowed_app(self, mocked_run):
+        mocked_run.return_value = SimpleNamespace(stdout=None, stderr=None, returncode=1)
+
+        result = run(["gh", "auth", "status"])
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, "")
+        self.assertEqual(result.returncode, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
