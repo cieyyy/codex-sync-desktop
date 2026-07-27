@@ -19,7 +19,7 @@ from . import __version__
 from .core.backups import create_consistent_backup, restore_backup
 from .core.config import Settings, SettingsStore, default_app_home, device_slug
 from .core.diagnostics import collect_diagnostics, diagnostics_json, remediation_text
-from .core.git_client import VaultGit
+from .core.git_client import VaultGit, compact_failure_reason, summarize_pull
 from .core.index_repair import repair_indexes
 from .core.processes import running_codex_processes
 from .core.sessions import apply_import, export_sanitized_sessions, list_source_devices, plan_import
@@ -388,7 +388,13 @@ class CodexSyncApp(tk.Tk):
     def pull_vault(self) -> None:
         vault = self._require_vault()
         if vault:
-            self._run_task("拉取仓库", lambda: self._checked_git(VaultGit(vault).pull()), self.refresh_devices)
+            def work() -> str:
+                result = VaultGit(vault).pull()
+                if result.output:
+                    self.logger.info("Git pull 完整输出：\n%s", result.output)
+                self._checked_git(result)
+                return summarize_pull(result.output)
+            self._run_task("拉取仓库", work, self.refresh_devices)
 
     def export_and_push(self) -> None:
         vault = self._require_vault()
@@ -480,7 +486,10 @@ class CodexSyncApp(tk.Tk):
 
     def _checked_git(self, result: Any) -> str:
         if not result.ok:
-            raise RuntimeError(result.output or "Git command failed")
+            if result.output:
+                self.logger.error("Git 命令完整错误输出：\n%s", result.output)
+            reason = compact_failure_reason(result.output)
+            raise RuntimeError(f"结果：失败\n原因：{reason}")
         return result.output
 
     def _run_task(

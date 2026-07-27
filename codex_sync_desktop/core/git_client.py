@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,35 @@ class CommandResult:
     ok: bool
     output: str
     returncode: int
+
+
+def summarize_pull(output: str) -> str:
+    match = re.search(r"(?m)^\s*(\d+)\s+files? changed(?:,.*)?$", output)
+    if match:
+        count = int(match.group(1))
+    elif "Already up to date." in output or "Already up-to-date." in output:
+        count = 0
+    else:
+        count = len(re.findall(r"(?m)^\s*.+\|\s+\d+\s+[+\-]+\s*$", output))
+    if "Fast-forward" in output:
+        status = "Fast-forward"
+    elif "Successfully rebased" in output:
+        status = "Rebase 完成"
+    elif count == 0:
+        status = "已经是最新"
+    else:
+        status = "同步完成"
+    return f"结果：成功\n数量：{count} 个文件\n状态：{status}"
+
+
+def compact_failure_reason(output: str, fallback: str = "Git 命令执行失败") -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    markers = ("fatal:", "error:", "failed", "denied", "authentication", "could not", "conflict")
+    reason = next(
+        (line for line in reversed(lines) if any(marker in line.lower() for marker in markers)),
+        lines[-1] if lines else fallback,
+    )
+    return reason if len(reason) <= 300 else reason[:297] + "..."
 
 
 def command_environment(

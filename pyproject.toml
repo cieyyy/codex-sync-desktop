@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-sync-desktop"
-version = "0.1.9"
+version = "0.1.10"
 description = "Lightweight desktop tool for safely synchronizing Codex conversation history"
 readme = "README.md"
 requires-python = ">=3.9"
