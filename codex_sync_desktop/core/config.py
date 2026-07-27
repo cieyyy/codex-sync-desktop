@@ -67,6 +67,12 @@ class SettingsStore:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return Settings()
+        # Settings written before the guided onboarding existed already had a
+        # working vault. Treat those installations as migrated so an upgrade
+        # does not unexpectedly reopen the first-run wizard. New interrupted
+        # onboarding writes the explicit false value and remains resumable.
+        if "onboarding_complete" not in data and data.get("vault_path"):
+            data["onboarding_complete"] = True
         allowed = Settings.__dataclass_fields__.keys()
         return Settings(**{key: value for key, value in data.items() if key in allowed})
 

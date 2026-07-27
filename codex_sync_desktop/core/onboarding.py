@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shlex
@@ -20,6 +21,8 @@ GITHUB_SIGNUP_URL = "https://github.com/signup"
 GITHUB_DEVICE_URL = "https://github.com/login/device"
 GIT_DOWNLOAD_URL = "https://git-scm.com/downloads"
 GH_DOWNLOAD_URL = "https://cli.github.com/"
+GH_LATEST_RELEASE_API = "https://api.github.com/repos/cli/cli/releases/latest"
+MAX_TOOL_DOWNLOAD_BYTES = 100 * 1024 * 1024
 
 
 @dataclass
@@ -153,7 +156,12 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Path | Non
     if sys.platform == "darwin":
         brew = shutil.which("brew", path=command_environment().get("PATH"))
         if not brew:
-            raise FileNotFoundError("未找到 Homebrew。请使用下方官方下载按钮安装 GitHub CLI；Git 可按 macOS 提示安装命令行工具。")
+            git_probe = run(["git", "--version"], timeout=10, proxy_url=proxy)
+            if not git_probe.ok:
+                subprocess.Popen(["xcode-select", "--install"])
+            installer = download_latest_macos_gh_installer(app_home, proxy)
+            subprocess.Popen(["open", str(installer)])
+            return installer
         script = app_home / "install-sync-tools.command"
         exports = ""
         if proxy:
@@ -169,6 +177,69 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Path | Non
         subprocess.Popen(["open", str(script)])
         return script
     raise RuntimeError("当前系统暂不支持自动安装，请使用官方下载入口")
+
+
+def download_latest_macos_gh_installer(app_home: Path, proxy_url: str = "") -> Path:
+    proxy = validate_proxy_url(proxy_url)
+    handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else [urllib.request.ProxyHandler({})]
+    opener = urllib.request.build_opener(*handlers)
+    headers = {"User-Agent": "Codex-Sync-Desktop", "Accept": "application/vnd.github+json"}
+    request = urllib.request.Request(GH_LATEST_RELEASE_API, headers=headers)
+    with opener.open(request, timeout=30) as response:
+        release = json.loads(response.read().decode("utf-8"))
+    asset = select_macos_gh_installer_asset(release)
+    size = int(asset.get("size") or 0)
+    if size <= 0 or size > MAX_TOOL_DOWNLOAD_BYTES:
+        raise RuntimeError("GitHub CLI 官方安装包大小异常，已停止下载")
+    digest = str(asset.get("digest") or "")
+    if not digest.startswith("sha256:") or len(digest) != 71:
+        raise RuntimeError("GitHub CLI 官方安装包没有可用的 SHA-256 校验值")
+    expected_hash = digest.removeprefix("sha256:").lower()
+    url = str(asset.get("browser_download_url") or "")
+    target_dir = app_home / "downloads"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / "GitHub-CLI-macOS-universal.pkg"
+    temporary = target.with_suffix(".download")
+    download_request = urllib.request.Request(url, headers={"User-Agent": "Codex-Sync-Desktop"})
+    hasher = hashlib.sha256()
+    received = 0
+    try:
+        with opener.open(download_request, timeout=180) as response, temporary.open("wb") as output:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                received += len(chunk)
+                if received > MAX_TOOL_DOWNLOAD_BYTES:
+                    raise RuntimeError("GitHub CLI 官方安装包超过安全大小限制")
+                hasher.update(chunk)
+                output.write(chunk)
+        if received != size:
+            raise RuntimeError(f"GitHub CLI 安装包下载不完整：应为 {size} 字节，实际 {received} 字节")
+        if hasher.hexdigest().lower() != expected_hash:
+            raise RuntimeError("GitHub CLI 安装包 SHA-256 校验失败，文件已拒绝使用")
+        temporary.replace(target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return target
+
+
+def select_macos_gh_installer_asset(release: dict[str, object]) -> dict[str, object]:
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        raise RuntimeError("GitHub CLI 最新版本信息缺少安装资源")
+    matches = [
+        asset for asset in assets
+        if isinstance(asset, dict) and str(asset.get("name") or "").endswith("_macOS_universal.pkg")
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("未找到唯一的 GitHub CLI macOS universal.pkg 官方安装包")
+    asset = matches[0]
+    url = str(asset.get("browser_download_url") or "")
+    if not url.startswith("https://github.com/cli/cli/releases/download/"):
+        raise RuntimeError("GitHub CLI 安装包下载地址不是 GitHub 官方地址")
+    return asset
 
 
 def create_private_repository(

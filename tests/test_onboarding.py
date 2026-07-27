@@ -7,7 +7,12 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from codex_sync_desktop.core.git_client import CommandResult
-from codex_sync_desktop.core.onboarding import create_private_repository, github_setup_status, validate_proxy_url
+from codex_sync_desktop.core.onboarding import (
+    create_private_repository,
+    github_setup_status,
+    select_macos_gh_installer_asset,
+    validate_proxy_url,
+)
 
 
 class ProxyValidationTests(TestCase):
@@ -107,3 +112,27 @@ class ToolProbeTests(TestCase):
         self.assertFalse(status["authenticated"])
         self.assertIn("cannot execute", status["gh_reason"])
         mocked_auth.assert_not_called()
+
+
+class OfficialInstallerSelectionTests(TestCase):
+    def test_selects_only_official_macos_universal_package(self):
+        release = {
+            "assets": [
+                {"name": "gh_2.96.0_macOS_arm64.zip", "browser_download_url": "https://github.com/cli/cli/releases/download/v2.96.0/arm.zip"},
+                {"name": "gh_2.96.0_macOS_universal.pkg", "browser_download_url": "https://github.com/cli/cli/releases/download/v2.96.0/gh.pkg"},
+            ]
+        }
+
+        asset = select_macos_gh_installer_asset(release)
+
+        self.assertEqual(asset["name"], "gh_2.96.0_macOS_universal.pkg")
+
+    def test_rejects_non_github_download_host(self):
+        release = {
+            "assets": [
+                {"name": "gh_2.96.0_macOS_universal.pkg", "browser_download_url": "https://example.com/gh.pkg"},
+            ]
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "不是 GitHub 官方地址"):
+            select_macos_gh_installer_asset(release)

@@ -29,6 +29,23 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: '& "dist/Codex Sync Desktop/Codex Sync Desktop.exe" --smoke-onboarding'
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path pyproject.toml -Pattern '^version = "([^"]+)"$').Matches[0].Groups[1].Value
+          $env:APP_VERSION = $version
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\windows.iss
+      - name: Smoke test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "codex-sync-installed"
+          & "dist\Codex-Sync-Desktop-Windows-Setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
+          if ($LASTEXITCODE -ne 0) { throw "Installer failed with exit code $LASTEXITCODE" }
+          & "$installDir\Codex Sync Desktop.exe" --smoke-onboarding
+          if ($LASTEXITCODE -ne 0) { throw "Installed app smoke test failed with exit code $LASTEXITCODE" }
+          & "$installDir\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
       - name: Smoke test macOS app
         if: runner.os == 'macOS'
         run: '"dist/Codex Sync Desktop.app/Contents/MacOS/Codex Sync Desktop" --smoke-onboarding'
@@ -47,6 +64,7 @@ jobs:
           path: |
             dist/${{ matrix.artifact }}.zip
             dist/${{ matrix.artifact }}.dmg
+            dist/Codex-Sync-Desktop-Windows-Setup.exe
           if-no-files-found: error
           retention-days: 14
 

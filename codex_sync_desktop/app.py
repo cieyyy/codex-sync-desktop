@@ -449,14 +449,22 @@ class CodexSyncApp(tk.Tk):
         vault = self._require_vault()
         if not vault:
             return
-        def work() -> str:
-            report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
-            self.logger.info("已导出 %s 个活动文字会话，移除 %s 个不再同步的旧副本和 %s 个媒体或二进制块", report.sessions, report.removed_files, report.media_removed)
-            if self.settings.auto_push_after_export:
-                result = VaultGit(vault, proxy_url=self.settings.proxy_url).commit_and_push(f"sync: update {device_slug(self.settings.device_name)}")
-                self._checked_git(result)
-            return f"结果：成功\n活动会话：{report.sessions}\n停止同步：{report.removed_files}\n失败：0"
-        self._run_task("导出并推送", work, self.refresh_sources)
+        self._run_task("导出并推送", lambda: self._export_and_push_work(vault), self.refresh_sources)
+
+    def _export_and_push_work(self, vault: Path, force_push: bool = False) -> str:
+        report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
+        self.logger.info(
+            "已导出 %s 个活动文字会话，移除 %s 个不再同步的旧副本和 %s 个媒体或二进制块",
+            report.sessions,
+            report.removed_files,
+            report.media_removed,
+        )
+        if force_push or self.settings.auto_push_after_export:
+            result = VaultGit(vault, proxy_url=self.settings.proxy_url).commit_and_push(
+                f"sync: update {device_slug(self.settings.device_name)}"
+            )
+            self._checked_git(result)
+        return f"结果：成功\n活动会话：{report.sessions}\n停止同步：{report.removed_files}\n失败：0"
 
     def sync_once(self) -> None:
         vault = self._require_vault()
@@ -626,6 +634,7 @@ class CodexSyncApp(tk.Tk):
         function: Callable[[], Any],
         callback: Callable[..., None] | None = None,
         callback_with_result: bool = False,
+        error_callback: Callable[[Exception], None] | None = None,
     ) -> None:
         if self._busy:
             return
@@ -639,7 +648,7 @@ class CodexSyncApp(tk.Tk):
                 result = function()
                 self.messages.put(("success", label, result, callback, callback_with_result))
             except Exception as exc:
-                self.messages.put(("error", label, exc, traceback.format_exc()))
+                self.messages.put(("error", label, exc, traceback.format_exc(), error_callback))
         threading.Thread(target=worker, daemon=True).start()
 
     def _poll_messages(self) -> None:
@@ -663,7 +672,7 @@ class CodexSyncApp(tk.Tk):
                     elif isinstance(result, Path):
                         messagebox.showinfo(label, str(result))
                 elif message[0] == "error":
-                    _, label, exc, error_trace = message
+                    _, label, exc, error_trace, error_callback = message
                     self._busy = False
                     for button in self.task_buttons:
                         button.configure(state="normal")
@@ -672,6 +681,8 @@ class CodexSyncApp(tk.Tk):
                     if label == "刷新检查":
                         self.overview_tree.delete(*self.overview_tree.get_children())
                         self.overview_tree.insert("", "end", values=("环境检查", "失败", str(exc)))
+                    if error_callback:
+                        error_callback(exc)
                     messagebox.showerror(label + "失败", str(exc))
         except queue.Empty:
             pass
@@ -695,7 +706,7 @@ class CodexSyncApp(tk.Tk):
         self.busy_label.configure(text="日志已清理")
 
     def maybe_show_onboarding(self) -> None:
-        if not self.settings.onboarding_complete and not self.settings.vault:
+        if not self.settings.onboarding_complete:
             self.open_onboarding()
 
     def open_onboarding(self) -> None:

@@ -124,9 +124,11 @@ class OnboardingWizard(tk.Toplevel):
         ttk.Button(downloads, text="自动安装/修复必要工具", style="Accent.TButton", command=self._install_dependencies).pack(side="left")
         ttk.Button(downloads, text="下载 Git", command=lambda: webbrowser.open(GIT_DOWNLOAD_URL)).pack(side="left")
         ttk.Button(downloads, text="下载 GitHub CLI", command=lambda: webbrowser.open(GH_DOWNLOAD_URL)).pack(side="left", padx=8)
+        self.dependency_status = ttk.Label(page, text="Windows 使用 winget；macOS 优先使用 Homebrew，无 Homebrew 时下载并校验 GitHub 官方安装包。", style="PanelMuted.TLabel", wraplength=700, justify="left")
+        self.dependency_status.pack(anchor="w", pady=(10, 0))
 
     def _repository_page(self, page: ttk.Frame) -> None:
-        self._heading(page, "自动创建私有仓库", "点击完成后，软件会创建私有仓库、克隆到本机、配置 Git 身份，并保存日常同步设置。")
+        self._heading(page, "创建私有仓库并首次同步", "点击完成后，软件会创建私有仓库、克隆到本机、配置 Git 身份，并立即上传本机活动文字会话。")
         form = ttk.Frame(page, style="Panel.TFrame")
         form.pack(fill="x")
         fields = (
@@ -141,7 +143,7 @@ class OnboardingWizard(tk.Toplevel):
             if browse:
                 ttk.Button(form, text="选择", command=lambda value=variable: self._choose_directory(value)).grid(row=row, column=2, padx=(8, 0))
         form.columnconfigure(1, weight=1)
-        self.repository_status = ttk.Label(page, text="仓库将通过 GitHub API 验证为私有后才会启用。", style="PanelMuted.TLabel")
+        self.repository_status = ttk.Label(page, text="只有仓库通过私有性验证且首次推送成功，向导才会显示全部完成。", style="PanelMuted.TLabel", wraplength=700, justify="left")
         self.repository_status.pack(anchor="w", pady=(18, 0))
 
     def _show_step(self) -> None:
@@ -150,7 +152,7 @@ class OnboardingWizard(tk.Toplevel):
         self.pages[self.step].pack(fill="both", expand=True)
         self.progress.configure(text=f"步骤 {self.step + 1} / {len(self.pages)}")
         self.back_button.configure(state="normal" if self.step else "disabled")
-        self.next_button.configure(text="自动创建并完成" if self.step == len(self.pages) - 1 else "下一步")
+        self.next_button.configure(text="创建仓库并首次同步" if self.step == len(self.pages) - 1 else "下一步")
         if self.step == 2:
             self._refresh_account()
 
@@ -201,9 +203,13 @@ class OnboardingWizard(tk.Toplevel):
         self.network_ok = result.ok
         if result.ok:
             mode = "通过代理" if result.proxy_used else "直接连接"
-            self.network_status.configure(text=f"连接成功：{mode}，HTTP {result.status}")
+            self.app.settings.proxy_url = validate_proxy_url(self.proxy_url.get())
+            self.app.settings.china_network_mode = self.china_mode.get()
+            self.app.store.save(self.app.settings)
+            self.network_status.configure(text=f"连接成功：{mode}，HTTP {result.status}。设置已保存，可继续注册或登录。")
         else:
-            self.network_status.configure(text=f"连接失败：{result.reason}")
+            hint = "请确认代理已启动、HTTP 端口正确，并允许本软件访问网络。" if self.proxy_url.get().strip() else "请检查网络；中国大陆或受限网络请先启动合规代理并填写 HTTP 地址。"
+            self.network_status.configure(text=f"连接失败：{result.reason}\n{hint}")
 
     def _launch_login(self) -> None:
         try:
@@ -220,12 +226,21 @@ class OnboardingWizard(tk.Toplevel):
             parent=self,
         ):
             return
-        try:
-            launch_dependency_install(self.app.store.app_home, self.proxy_url.get())
-        except (OSError, RuntimeError, ValueError) as exc:
-            messagebox.showerror("无法自动安装", str(exc), parent=self)
-            return
-        messagebox.showinfo("安装窗口已打开", "请在终端中完成安装，然后重新打开本软件并点击“重新检测”。", parent=self)
+        self.dependency_status.configure(text="正在准备官方安装程序，请稍候...")
+        self.app._run_task(
+            "准备必要工具",
+            lambda: {"path": launch_dependency_install(self.app.store.app_home, self.proxy_url.get())},
+            self._dependency_installer_opened,
+            callback_with_result=True,
+            error_callback=self._dependency_install_failed,
+        )
+
+    def _dependency_installer_opened(self, _result: dict[str, object]) -> None:
+        self.dependency_status.configure(text="系统安装窗口已打开。完成安装后重新打开软件，并点击“重新检测”。")
+        messagebox.showinfo("安装窗口已打开", "请在系统终端或安装器中完成授权和安装，然后重新打开本软件并点击“重新检测”。", parent=self)
+
+    def _dependency_install_failed(self, exc: Exception) -> None:
+        self.dependency_status.configure(text=f"准备失败：{exc}\n可检查网络/代理后重试，或使用旁边的官方下载按钮。")
 
     def _refresh_account(self) -> None:
         try:
@@ -260,11 +275,14 @@ class OnboardingWizard(tk.Toplevel):
             messagebox.showerror("配置不完整", str(exc), parent=self)
             return
         self.repository_status.configure(text="正在创建并验证私有仓库...")
+        self.back_button.configure(state="disabled")
+        self.next_button.configure(state="disabled", text="正在创建私有仓库...")
         self.app._run_task(
             "首次自动配置",
             lambda: create_private_repository(local_path, self.repository_name.get(), proxy),
             lambda result: self._complete(result, proxy, codex_home, device_name),
             callback_with_result=True,
+            error_callback=self._setup_failed,
         )
 
     def _complete(self, result: RepositorySetupResult, proxy: str, codex_home: Path, device_name: str) -> None:
@@ -275,15 +293,42 @@ class OnboardingWizard(tk.Toplevel):
         settings.device_name = device_name
         settings.proxy_url = proxy
         settings.china_network_mode = self.china_mode.get()
-        settings.onboarding_complete = True
+        settings.onboarding_complete = False
         self.app.store.save(settings)
         for key, variable in self.app.setting_vars.items():
             if hasattr(settings, key):
                 variable.set(str(getattr(settings, key)))
+        self.repository_status.configure(text=f"私有仓库已创建：{result.owner}/{result.name}。正在首次导出并推送...")
+        self.next_button.configure(text="正在首次同步...")
+        self.app._run_task(
+            "首次同步",
+            lambda: {"summary": self.app._export_and_push_work(result.local_path, force_push=True)},
+            lambda payload: self._initial_sync_complete(result, str(payload["summary"])),
+            callback_with_result=True,
+            error_callback=self._initial_sync_failed,
+        )
+
+    def _initial_sync_complete(self, result: RepositorySetupResult, summary: str) -> None:
+        self.app.settings.onboarding_complete = True
+        self.app.store.save(self.app.settings)
         self.destroy()
         self.app.refresh_all()
         self.app.show_page("sync")
-        messagebox.showinfo("配置完成", f"私有仓库已创建：{result.owner}/{result.name}\n现在可以点击“导出并推送”。", parent=self.app)
+        messagebox.showinfo(
+            "首次配置全部完成",
+            f"私有仓库：{result.owner}/{result.name}\n\n{summary}\n\n以后换设备时，只需安装软件并运行首次配置向导。",
+            parent=self.app,
+        )
+
+    def _setup_failed(self, exc: Exception) -> None:
+        self.repository_status.configure(text=f"创建失败：{exc}\n请检查上方配置后点击重试。")
+        self.back_button.configure(state="normal")
+        self.next_button.configure(state="normal", text="重试创建并首次同步")
+
+    def _initial_sync_failed(self, exc: Exception) -> None:
+        self.repository_status.configure(text=f"仓库已安全创建，但首次推送失败：{exc}\n配置已保留，检查网络后点击重试。")
+        self.back_button.configure(state="normal")
+        self.next_button.configure(state="normal", text="重试首次同步")
 
     def _choose_directory(self, variable: tk.StringVar) -> None:
         selected = filedialog.askdirectory(initialdir=variable.get() or str(Path.home()), parent=self)
