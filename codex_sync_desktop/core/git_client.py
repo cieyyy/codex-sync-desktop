@@ -16,6 +16,24 @@ MACOS_COMMAND_PATHS = (
     "/opt/local/bin",
 )
 
+
+def windows_command_paths(environ: Mapping[str, str]) -> tuple[str, ...]:
+    program_files = environ.get("ProgramFiles", r"C:\Program Files")
+    local_app_data = environ.get("LOCALAPPDATA", "")
+    candidates = [
+        str(Path(program_files) / "Git" / "cmd"),
+        str(Path(program_files) / "GitHub CLI"),
+    ]
+    if local_app_data:
+        candidates.extend(
+            (
+                str(Path(local_app_data) / "Programs" / "Git" / "cmd"),
+                str(Path(local_app_data) / "Programs" / "GitHub CLI"),
+                str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links"),
+            )
+        )
+    return tuple(candidates)
+
 TRANSIENT_PUSH_MARKERS = (
     "remote end hung up unexpectedly",
     "rpc failed",
@@ -88,8 +106,11 @@ def command_environment(
 ) -> dict[str, str]:
     env = dict(os.environ if environ is None else environ)
     entries = [item for item in env.get("PATH", "").split(os.pathsep) if item]
-    if (platform_name or sys.platform) == "darwin":
+    selected_platform = platform_name or sys.platform
+    if selected_platform == "darwin":
         entries = [*MACOS_COMMAND_PATHS, *entries]
+    elif selected_platform == "win32":
+        entries = [*windows_command_paths(env), *entries]
     env["PATH"] = os.pathsep.join(dict.fromkeys(entries))
     if proxy_url:
         env["HTTP_PROXY"] = proxy_url

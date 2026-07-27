@@ -11,8 +11,10 @@ from .core.onboarding import (
     GIT_DOWNLOAD_URL,
     GITHUB_SIGNUP_URL,
     ConnectivityResult,
+    DependencyInstallResult,
     RepositorySetupResult,
     check_github_connectivity,
+    clear_tool_installer_cache,
     create_private_repository,
     detect_system_proxy,
     github_setup_status,
@@ -34,6 +36,7 @@ class OnboardingWizard(tk.Toplevel):
         self.step = 0
         self.network_ok = False
         self.account_status: dict[str, object] = {}
+        self.dependency_poll_attempts = 0
         self.pages: list[ttk.Frame] = []
         self.confirm_private = tk.BooleanVar(value=False)
         self.china_mode = tk.BooleanVar(value=app.settings.china_network_mode)
@@ -124,7 +127,7 @@ class OnboardingWizard(tk.Toplevel):
         ttk.Button(downloads, text="自动安装/修复必要工具", style="Accent.TButton", command=self._install_dependencies).pack(side="left")
         ttk.Button(downloads, text="下载 Git", command=lambda: webbrowser.open(GIT_DOWNLOAD_URL)).pack(side="left")
         ttk.Button(downloads, text="下载 GitHub CLI", command=lambda: webbrowser.open(GH_DOWNLOAD_URL)).pack(side="left", padx=8)
-        self.dependency_status = ttk.Label(page, text="Windows 使用 winget；macOS 优先使用 Homebrew，无 Homebrew 时下载并校验 GitHub 官方安装包。", style="PanelMuted.TLabel", wraplength=700, justify="left")
+        self.dependency_status = ttk.Label(page, text="缺少工具时软件会自动安装；系统安装方式不可用时，自动下载并校验 GitHub 官方安装包。", style="PanelMuted.TLabel", wraplength=700, justify="left")
         self.dependency_status.pack(anchor="w", pady=(10, 0))
 
     def _repository_page(self, page: ttk.Frame) -> None:
@@ -222,22 +225,63 @@ class OnboardingWizard(tk.Toplevel):
     def _install_dependencies(self) -> None:
         if not messagebox.askyesno(
             "确认安装",
-            "将打开系统终端安装 Git 和 GitHub CLI，可能请求管理员权限并占用约 300 MiB 磁盘。可以通过系统软件管理器卸载。是否继续？",
+            "软件将自动下载并安装缺少的 Git 和 GitHub CLI，可能请求 Windows UAC 或 macOS 系统授权，最多占用约 300 MiB 磁盘。是否继续？",
             parent=self,
         ):
             return
         self.dependency_status.configure(text="正在准备官方安装程序，请稍候...")
         self.app._run_task(
             "准备必要工具",
-            lambda: {"path": launch_dependency_install(self.app.store.app_home, self.proxy_url.get())},
+            lambda: {"result": launch_dependency_install(self.app.store.app_home, self.proxy_url.get())},
             self._dependency_installer_opened,
             callback_with_result=True,
             error_callback=self._dependency_install_failed,
         )
 
-    def _dependency_installer_opened(self, _result: dict[str, object]) -> None:
-        self.dependency_status.configure(text="系统安装窗口已打开。完成安装后重新打开软件，并点击“重新检测”。")
-        messagebox.showinfo("安装窗口已打开", "请在系统终端或安装器中完成授权和安装，然后重新打开本软件并点击“重新检测”。", parent=self)
+    def _dependency_installer_opened(self, payload: dict[str, object]) -> None:
+        result = payload.get("result")
+        if not isinstance(result, DependencyInstallResult):
+            self._dependency_install_failed(RuntimeError("安装结果无效"))
+            return
+        self.dependency_status.configure(text=result.message)
+        if result.completed:
+            self._refresh_account()
+            return
+        messagebox.showinfo("等待系统授权", result.message, parent=self)
+        self.dependency_poll_attempts = 0
+        self.after(2500, self._poll_dependency_install)
+
+    def _poll_dependency_install(self) -> None:
+        try:
+            window_exists = bool(self.winfo_exists())
+        except tk.TclError:
+            return
+        if not window_exists or self.dependency_poll_attempts >= 200:
+            if window_exists:
+                self.dependency_status.configure(text="尚未检测到必要工具。请确认系统安装窗口已经完成，或点击“自动安装/修复必要工具”重试。")
+            return
+        if self.app._busy:
+            self.after(1000, self._poll_dependency_install)
+            return
+        self.dependency_poll_attempts += 1
+        try:
+            proxy = validate_proxy_url(self.proxy_url.get())
+        except ValueError:
+            return
+        self.app._run_task(
+            "自动检测必要工具",
+            lambda: github_setup_status(proxy),
+            self._dependency_poll_result,
+            callback_with_result=True,
+        )
+
+    def _dependency_poll_result(self, status: dict[str, object]) -> None:
+        self._show_account_status(status)
+        if status.get("git") and status.get("gh"):
+            self.dependency_status.configure(text="必要工具安装完成并已通过启动检测。现在可以点击“打开 GitHub 登录”。")
+            messagebox.showinfo("必要工具安装完成", "Git 和 GitHub CLI 已可用，现在可以继续 GitHub 登录。", parent=self)
+            return
+        self.after(3000, self._poll_dependency_install)
 
     def _dependency_install_failed(self, exc: Exception) -> None:
         self.dependency_status.configure(text=f"准备失败：{exc}\n可检查网络/代理后重试，或使用旁边的官方下载按钮。")
@@ -260,6 +304,9 @@ class OnboardingWizard(tk.Toplevel):
         )
         for label, ok, action in rows:
             self.account_tree.insert("", "end", values=(label, "已完成" if ok else "未完成", "无需处理" if ok else action))
+        if status.get("git") and status.get("gh"):
+            clear_tool_installer_cache(self.app.store.app_home)
+            self.dependency_status.configure(text="必要工具已安装并通过实际启动检测，可以继续 GitHub 登录。")
 
     def _finish_setup(self) -> None:
         try:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .git_client import CommandResult, command_environment, github_auth_status, run
 
@@ -22,7 +23,8 @@ GITHUB_DEVICE_URL = "https://github.com/login/device"
 GIT_DOWNLOAD_URL = "https://git-scm.com/downloads"
 GH_DOWNLOAD_URL = "https://cli.github.com/"
 GH_LATEST_RELEASE_API = "https://api.github.com/repos/cli/cli/releases/latest"
-MAX_TOOL_DOWNLOAD_BYTES = 100 * 1024 * 1024
+GIT_WINDOWS_LATEST_RELEASE_API = "https://api.github.com/repos/git-for-windows/git/releases/latest"
+MAX_TOOL_DOWNLOAD_BYTES = 200 * 1024 * 1024
 
 
 @dataclass
@@ -39,6 +41,12 @@ class RepositorySetupResult:
     name: str
     url: str
     local_path: Path
+
+
+@dataclass
+class DependencyInstallResult:
+    completed: bool
+    message: str
 
 
 def validate_proxy_url(value: str) -> str:
@@ -103,7 +111,7 @@ def launch_github_login(app_home: Path, proxy_url: str = "") -> Path | None:
         detail = _probe_reason(gh_probe, "未找到 GitHub CLI")
         raise FileNotFoundError(f"GitHub CLI 未安装或已损坏：{detail}。请点击“自动安装/修复必要工具”")
     app_home.mkdir(parents=True, exist_ok=True)
-    if os.name == "nt":
+    if sys.platform == "win32":
         escaped_gh = gh_path.replace("'", "''")
         prefix = ""
         if proxy:
@@ -135,70 +143,126 @@ def launch_github_login(app_home: Path, proxy_url: str = "") -> Path | None:
     return None
 
 
-def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Path | None:
+def launch_dependency_install(app_home: Path, proxy_url: str = "") -> DependencyInstallResult:
     proxy = validate_proxy_url(proxy_url)
     app_home.mkdir(parents=True, exist_ok=True)
-    if os.name == "nt":
-        winget = shutil.which("winget")
-        if not winget:
-            raise FileNotFoundError("未找到 Windows winget，请使用下方官方下载按钮安装 Git 和 GitHub CLI")
-        prefix = ""
-        if proxy:
-            escaped = proxy.replace("'", "''")
-            prefix = f"$env:HTTP_PROXY='{escaped}'; $env:HTTPS_PROXY='{escaped}'; "
-        command = (
-            f"{prefix}winget install --id Git.Git -e --force --accept-package-agreements --accept-source-agreements; "
-            "winget install --id GitHub.cli -e --force --accept-package-agreements --accept-source-agreements; "
-            "Write-Host '安装结束。请重新打开 Codex Sync Desktop 后继续。' -ForegroundColor Green"
-        )
-        subprocess.Popen(["powershell.exe", "-NoExit", "-Command", command])
-        return None
-    if sys.platform == "darwin":
-        brew = shutil.which("brew", path=command_environment().get("PATH"))
-        if not brew:
-            git_probe = run(["git", "--version"], timeout=10, proxy_url=proxy)
+    git_probe = run(["git", "--version"], timeout=10, proxy_url=proxy)
+    gh_probe = run(["gh", "--version"], timeout=10, proxy_url=proxy)
+    if git_probe.ok and gh_probe.ok:
+        clear_tool_installer_cache(app_home)
+        return DependencyInstallResult(True, "Git 和 GitHub CLI 已可用，无需安装。")
+    if sys.platform == "win32":
+        winget = shutil.which("winget", path=command_environment().get("PATH"))
+        winget_failures: list[str] = []
+        if winget:
+            packages = []
             if not git_probe.ok:
-                subprocess.Popen(["xcode-select", "--install"])
+                packages.append(("Git.Git", "Git"))
+            if not gh_probe.ok:
+                packages.append(("GitHub.cli", "GitHub CLI"))
+            for package_id, label in packages:
+                install = run(
+                    [winget, "install", "--id", package_id, "-e", "--force", "--accept-package-agreements", "--accept-source-agreements"],
+                    timeout=900,
+                    proxy_url=proxy,
+                )
+                if not install.ok:
+                    winget_failures.append(f"{label}: {_probe_reason(install, 'winget 安装失败')}")
+            verified = github_setup_status(proxy)
+            if verified.get("git") and verified.get("gh"):
+                clear_tool_installer_cache(app_home)
+                return DependencyInstallResult(True, "Git 和 GitHub CLI 已自动安装完成，可以继续登录。")
+        git_installer, gh_installer = download_latest_windows_tool_installers(app_home, proxy)
+        script = write_windows_tool_install_script(app_home, git_installer, gh_installer, proxy)
+        subprocess.Popen(["powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", str(script)])
+        fallback_note = "；winget 未成功，已切换官方安装包" if winget_failures else ""
+        return DependencyInstallResult(False, f"Git 和 GitHub CLI 官方安装程序已打开{fallback_note}。按系统提示授权，软件会自动检测安装结果。")
+    if sys.platform == "darwin":
+        actions = []
+        if not git_probe.ok:
+            subprocess.Popen(["/usr/bin/xcode-select", "--install"])
+            actions.append("macOS 命令行工具安装器")
+        if not gh_probe.ok:
             installer = download_latest_macos_gh_installer(app_home, proxy)
-            subprocess.Popen(["open", str(installer)])
-            return installer
-        script = app_home / "install-sync-tools.command"
-        exports = ""
-        if proxy:
-            quoted = shlex.quote(proxy)
-            exports = f"export HTTP_PROXY={quoted}\nexport HTTPS_PROXY={quoted}\n"
-        script.write_text(
-            "#!/bin/sh\n"
-            f"{exports}{shlex.quote(brew)} install git gh\n"
-            "status=$?\nprintf '安装结束，请重新打开 Codex Sync Desktop。按回车关闭...'; read answer\nexit $status\n",
-            encoding="utf-8",
-        )
-        script.chmod(0o700)
-        subprocess.Popen(["open", str(script)])
-        return script
+            subprocess.Popen(["/usr/bin/open", str(installer)])
+            actions.append("GitHub CLI 官方安装器")
+        return DependencyInstallResult(False, "、".join(actions) + "已打开。完成系统授权后软件会自动检测。")
     raise RuntimeError("当前系统暂不支持自动安装，请使用官方下载入口")
 
 
+def download_latest_windows_tool_installers(app_home: Path, proxy_url: str = "") -> tuple[Path, Path]:
+    git_installer = download_verified_release_asset(
+        GIT_WINDOWS_LATEST_RELEASE_API,
+        select_windows_git_installer_asset,
+        app_home / "downloads" / "Git-for-Windows-64-bit.exe",
+        proxy_url,
+    )
+    gh_installer = download_verified_release_asset(
+        GH_LATEST_RELEASE_API,
+        select_windows_gh_installer_asset,
+        app_home / "downloads" / "GitHub-CLI-windows-amd64.msi",
+        proxy_url,
+    )
+    return git_installer, gh_installer
+
+
+def write_windows_tool_install_script(app_home: Path, git_installer: Path, gh_installer: Path, proxy_url: str = "") -> Path:
+    proxy = validate_proxy_url(proxy_url)
+    script = app_home / "install-sync-tools.ps1"
+    escaped_git = str(git_installer).replace("'", "''")
+    escaped_gh = str(gh_installer).replace("'", "''")
+    proxy_lines = ""
+    if proxy:
+        escaped_proxy = proxy.replace("'", "''")
+        proxy_lines = f"$env:HTTP_PROXY='{escaped_proxy}'\n$env:HTTPS_PROXY='{escaped_proxy}'\n"
+    script.write_text(
+        "$ErrorActionPreference='Stop'\n"
+        f"{proxy_lines}"
+        f"$git=Start-Process -FilePath '{escaped_git}' -ArgumentList @('/VERYSILENT','/NORESTART','/NOCANCEL','/SP-') -Wait -PassThru\n"
+        "if ($git.ExitCode -ne 0) { throw \"Git 安装失败，退出码 $($git.ExitCode)\" }\n"
+        f"$gh=Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i','{escaped_gh}','/passive','/norestart') -Wait -PassThru\n"
+        "if ($gh.ExitCode -ne 0) { throw \"GitHub CLI 安装失败，退出码 $($gh.ExitCode)\" }\n"
+        f"Remove-Item -LiteralPath '{escaped_git}' -Force -ErrorAction SilentlyContinue\n"
+        f"Remove-Item -LiteralPath '{escaped_gh}' -Force -ErrorAction SilentlyContinue\n"
+        "Write-Host '必要工具安装完成。Codex Sync Desktop 会自动检测结果。' -ForegroundColor Green\n"
+        "Read-Host '按回车关闭窗口'\n",
+        encoding="utf-8-sig",
+    )
+    return script
+
+
 def download_latest_macos_gh_installer(app_home: Path, proxy_url: str = "") -> Path:
+    return download_verified_release_asset(
+        GH_LATEST_RELEASE_API,
+        select_macos_gh_installer_asset,
+        app_home / "downloads" / "GitHub-CLI-macOS-universal.pkg",
+        proxy_url,
+    )
+
+
+def download_verified_release_asset(
+    release_api: str,
+    selector: Callable[[dict[str, object]], dict[str, object]],
+    target: Path,
+    proxy_url: str = "",
+) -> Path:
     proxy = validate_proxy_url(proxy_url)
     handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else [urllib.request.ProxyHandler({})]
     opener = urllib.request.build_opener(*handlers)
     headers = {"User-Agent": "Codex-Sync-Desktop", "Accept": "application/vnd.github+json"}
-    request = urllib.request.Request(GH_LATEST_RELEASE_API, headers=headers)
+    request = urllib.request.Request(release_api, headers=headers)
     with opener.open(request, timeout=30) as response:
         release = json.loads(response.read().decode("utf-8"))
-    asset = select_macos_gh_installer_asset(release)
+    asset = selector(release)
     size = int(asset.get("size") or 0)
     if size <= 0 or size > MAX_TOOL_DOWNLOAD_BYTES:
-        raise RuntimeError("GitHub CLI 官方安装包大小异常，已停止下载")
+        raise RuntimeError("官方安装包大小异常，已停止下载")
     digest = str(asset.get("digest") or "")
     if not digest.startswith("sha256:") or len(digest) != 71:
-        raise RuntimeError("GitHub CLI 官方安装包没有可用的 SHA-256 校验值")
+        raise RuntimeError("官方安装包没有可用的 SHA-256 校验值")
     expected_hash = digest.removeprefix("sha256:").lower()
     url = str(asset.get("browser_download_url") or "")
-    target_dir = app_home / "downloads"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / "GitHub-CLI-macOS-universal.pkg"
+    target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".download")
     download_request = urllib.request.Request(url, headers={"User-Agent": "Codex-Sync-Desktop"})
     hasher = hashlib.sha256()
@@ -211,13 +275,13 @@ def download_latest_macos_gh_installer(app_home: Path, proxy_url: str = "") -> P
                     break
                 received += len(chunk)
                 if received > MAX_TOOL_DOWNLOAD_BYTES:
-                    raise RuntimeError("GitHub CLI 官方安装包超过安全大小限制")
+                    raise RuntimeError("官方安装包超过安全大小限制")
                 hasher.update(chunk)
                 output.write(chunk)
         if received != size:
-            raise RuntimeError(f"GitHub CLI 安装包下载不完整：应为 {size} 字节，实际 {received} 字节")
+            raise RuntimeError(f"官方安装包下载不完整：应为 {size} 字节，实际 {received} 字节")
         if hasher.hexdigest().lower() != expected_hash:
-            raise RuntimeError("GitHub CLI 安装包 SHA-256 校验失败，文件已拒绝使用")
+            raise RuntimeError("官方安装包 SHA-256 校验失败，文件已拒绝使用")
         temporary.replace(target)
     except Exception:
         temporary.unlink(missing_ok=True)
@@ -240,6 +304,61 @@ def select_macos_gh_installer_asset(release: dict[str, object]) -> dict[str, obj
     if not url.startswith("https://github.com/cli/cli/releases/download/"):
         raise RuntimeError("GitHub CLI 安装包下载地址不是 GitHub 官方地址")
     return asset
+
+
+def select_windows_gh_installer_asset(release: dict[str, object]) -> dict[str, object]:
+    return _select_official_asset(
+        release,
+        lambda name: name.endswith("_windows_amd64.msi"),
+        "https://github.com/cli/cli/releases/download/",
+        "GitHub CLI Windows amd64 MSI",
+    )
+
+
+def select_windows_git_installer_asset(release: dict[str, object]) -> dict[str, object]:
+    return _select_official_asset(
+        release,
+        lambda name: name.startswith("Git-") and name.endswith("-64-bit.exe"),
+        "https://github.com/git-for-windows/git/releases/download/",
+        "Git for Windows 64-bit",
+    )
+
+
+def _select_official_asset(
+    release: dict[str, object],
+    name_matches: Callable[[str], bool],
+    url_prefix: str,
+    label: str,
+) -> dict[str, object]:
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        raise RuntimeError(f"{label} 最新版本信息缺少安装资源")
+    matches = [
+        asset for asset in assets
+        if isinstance(asset, dict) and name_matches(str(asset.get("name") or ""))
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"未找到唯一的 {label} 官方安装包")
+    asset = matches[0]
+    if not str(asset.get("browser_download_url") or "").startswith(url_prefix):
+        raise RuntimeError(f"{label} 下载地址不是 GitHub 官方地址")
+    return asset
+
+
+def clear_tool_installer_cache(app_home: Path) -> int:
+    downloads = app_home / "downloads"
+    if not downloads.is_dir():
+        return 0
+    removed = 0
+    for item in downloads.iterdir():
+        if item.is_file() and item.name in {
+            "Git-for-Windows-64-bit.exe",
+            "GitHub-CLI-windows-amd64.msi",
+            "GitHub-CLI-macOS-universal.pkg",
+        }:
+            item.unlink(missing_ok=True)
+            removed += 1
+    return removed
 
 
 def create_private_repository(

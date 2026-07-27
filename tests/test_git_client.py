@@ -41,6 +41,16 @@ class GitClientEnvironmentTests(unittest.TestCase):
         env = command_environment({"PATH": original_path}, platform_name="linux")
         self.assertEqual(env["PATH"], original_path)
 
+    def test_windows_environment_adds_standard_git_and_gh_paths(self):
+        env = command_environment(
+            {"PATH": r"C:\Windows\System32", "ProgramFiles": r"C:\Program Files", "LOCALAPPDATA": r"C:\Users\Buyer\AppData\Local"},
+            platform_name="win32",
+        )
+        entries = env["PATH"].split(os.pathsep)
+        self.assertIn(r"C:\Program Files\Git\cmd", entries)
+        self.assertIn(r"C:\Program Files\GitHub CLI", entries)
+        self.assertIn(r"C:\Users\Buyer\AppData\Local\Microsoft\WinGet\Links", entries)
+
     def test_proxy_is_applied_to_git_and_github_cli_environment(self):
         env = command_environment({"PATH": "/usr/bin"}, platform_name="linux", proxy_url="http://127.0.0.1:7890")
 

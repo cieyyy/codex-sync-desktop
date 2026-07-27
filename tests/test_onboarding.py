@@ -8,10 +8,15 @@ from unittest.mock import patch
 
 from codex_sync_desktop.core.git_client import CommandResult
 from codex_sync_desktop.core.onboarding import (
+    clear_tool_installer_cache,
     create_private_repository,
     github_setup_status,
+    launch_dependency_install,
     select_macos_gh_installer_asset,
+    select_windows_gh_installer_asset,
+    select_windows_git_installer_asset,
     validate_proxy_url,
+    write_windows_tool_install_script,
 )
 
 
@@ -136,3 +141,102 @@ class OfficialInstallerSelectionTests(TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "不是 GitHub 官方地址"):
             select_macos_gh_installer_asset(release)
+
+    def test_selects_official_windows_installers(self):
+        gh_release = {"assets": [{"name": "gh_2.96.0_windows_amd64.msi", "browser_download_url": "https://github.com/cli/cli/releases/download/v2.96.0/gh.msi"}]}
+        git_release = {"assets": [{"name": "Git-2.51.0-64-bit.exe", "browser_download_url": "https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/Git.exe"}]}
+
+        self.assertTrue(str(select_windows_gh_installer_asset(gh_release)["name"]).endswith("amd64.msi"))
+        self.assertTrue(str(select_windows_git_installer_asset(git_release)["name"]).endswith("64-bit.exe"))
+
+    def test_rejects_unofficial_windows_installer_url(self):
+        release = {"assets": [{"name": "Git-2.51.0-64-bit.exe", "browser_download_url": "https://example.com/Git.exe"}]}
+
+        with self.assertRaisesRegex(RuntimeError, "不是 GitHub 官方地址"):
+            select_windows_git_installer_asset(release)
+
+
+class DependencyInstallFallbackTests(TestCase):
+    @patch("codex_sync_desktop.core.onboarding.subprocess.Popen")
+    @patch("codex_sync_desktop.core.onboarding.download_latest_macos_gh_installer", return_value=Path("GitHub-CLI.pkg"))
+    @patch("codex_sync_desktop.core.onboarding.run")
+    @patch("codex_sync_desktop.core.onboarding.sys.platform", "darwin")
+    def test_macos_uses_system_git_installer_and_verified_gh_package(self, mocked_run, mocked_download, mocked_popen):
+        mocked_run.side_effect = [CommandResult(False, "missing git", 1), CommandResult(False, "missing gh", 1)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = launch_dependency_install(Path(directory))
+
+        self.assertFalse(result.completed)
+        mocked_download.assert_called_once()
+        mocked_popen.assert_any_call(["/usr/bin/xcode-select", "--install"])
+        mocked_popen.assert_any_call(["/usr/bin/open", "GitHub-CLI.pkg"])
+
+    @patch("codex_sync_desktop.core.onboarding.clear_tool_installer_cache")
+    @patch("codex_sync_desktop.core.onboarding.github_setup_status")
+    @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=r"C:\Program Files\WindowsApps\winget.exe")
+    @patch("codex_sync_desktop.core.onboarding.run")
+    @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
+    def test_windows_winget_install_is_rechecked_automatically(self, mocked_run, _which, mocked_status, mocked_clear):
+        mocked_run.side_effect = [
+            CommandResult(False, "missing git", 1),
+            CommandResult(False, "missing gh", 1),
+            CommandResult(True, "installed git", 0),
+            CommandResult(True, "installed gh", 0),
+        ]
+        mocked_status.return_value = {"git": True, "gh": True, "authenticated": False}
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = launch_dependency_install(Path(directory))
+
+        self.assertTrue(result.completed)
+        self.assertEqual(mocked_run.call_count, 4)
+        mocked_status.assert_called_once()
+        mocked_clear.assert_called_once()
+
+    @patch("codex_sync_desktop.core.onboarding.subprocess.Popen")
+    @patch("codex_sync_desktop.core.onboarding.write_windows_tool_install_script")
+    @patch("codex_sync_desktop.core.onboarding.download_latest_windows_tool_installers")
+    @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=None)
+    @patch("codex_sync_desktop.core.onboarding.run")
+    @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
+    def test_windows_without_winget_downloads_official_installers(self, mocked_run, _which, mocked_download, mocked_script, mocked_popen):
+        mocked_run.side_effect = [CommandResult(False, "missing git", 1), CommandResult(False, "missing gh", 1)]
+        mocked_download.return_value = (Path("git.exe"), Path("gh.msi"))
+        mocked_script.return_value = Path("install.ps1")
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = launch_dependency_install(Path(directory))
+
+        self.assertFalse(result.completed)
+        mocked_download.assert_called_once()
+        mocked_popen.assert_called_once()
+
+    def test_tool_installer_cache_only_removes_known_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app_home = Path(directory)
+            downloads = app_home / "downloads"
+            downloads.mkdir()
+            (downloads / "Git-for-Windows-64-bit.exe").write_bytes(b"installer")
+            (downloads / "customer-file.txt").write_text("keep", encoding="utf-8")
+
+            removed = clear_tool_installer_cache(app_home)
+
+            self.assertEqual(removed, 1)
+            self.assertTrue((downloads / "customer-file.txt").exists())
+
+    def test_windows_install_script_waits_checks_exit_codes_and_only_removes_known_installers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app_home = Path(directory)
+            git_installer = app_home / "downloads" / "Git-for-Windows-64-bit.exe"
+            gh_installer = app_home / "downloads" / "GitHub-CLI-windows-amd64.msi"
+
+            script = write_windows_tool_install_script(app_home, git_installer, gh_installer)
+            content = script.read_text(encoding="utf-8-sig")
+
+        self.assertIn("-Wait -PassThru", content)
+        self.assertIn("$git.ExitCode", content)
+        self.assertIn("$gh.ExitCode", content)
+        self.assertIn(str(git_installer), content)
+        self.assertIn(str(gh_installer), content)
+        self.assertNotIn("Remove-Item -Recurse", content)
