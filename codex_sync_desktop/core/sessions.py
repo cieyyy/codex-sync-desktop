@@ -93,9 +93,6 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
         raise ValueError(f"Invalid manifest: {manifest_path}")
     format_version = int(manifest.get("format", 1))
     source_root = device_root / "sessions"
-    timestamp = _timestamp_slug()
-    conflict_root = codex_home / "import-conflicts" / timestamp / source_device
-    backup_root = codex_home / "import-backups" / timestamp
     plan = ImportPlan(source_device=source_device)
 
     for entry in entries:
@@ -123,11 +120,8 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
         if merge["changes_from_source"] == 0:
             plan.items.append(ImportItem("identical", relative, source, destination, detail="semantic match"))
             continue
-        conflict_path = conflict_root / relative
-        backup_path = backup_root / relative
         plan.items.append(ImportItem(
             "conflict", relative, source, destination,
-            conflict_path=conflict_path, backup_path=backup_path,
             merged_content=merged_content,
             detail=f"merge {merge['source_additions']} additions and {merge['source_replacements']} richer records",
         ))
@@ -145,12 +139,9 @@ def apply_import(plan: ImportPlan) -> Dict[str, Any]:
         if item.action == "copy":
             _copy_atomic(item.source, item.destination)
             copied.append(item.destination)
-        elif item.action == "conflict" and item.conflict_path:
-            if not item.backup_path or item.merged_content is None:
+        elif item.action == "conflict":
+            if item.merged_content is None:
                 raise ValueError(f"Missing merge data for {item.relative_path}")
-            _copy_atomic(item.destination, item.backup_path)
-            _copy_atomic(item.source, item.conflict_path)
-            conflicts.append(item.conflict_path)
             _write_atomic(item.destination, item.merged_content)
             merged.append(item.destination)
     return {"copied": copied, "conflicts": conflicts, "merged": merged, "counts": plan.counts}
@@ -363,7 +354,3 @@ def _resolve_manifest_paths(source_root: Path, codex_home: Path, relative: str, 
 def _task_id_from_filename(name: str) -> str:
     stem = name[:-6] if name.endswith(".jsonl") else name
     return stem.rsplit("-", 1)[-1] if "-" in stem else stem
-
-
-def _timestamp_slug() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")

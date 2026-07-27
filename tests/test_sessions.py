@@ -1,8 +1,17 @@
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
+from codex_sync_desktop.core.backups import (
+    clear_backup_storage,
+    create_import_transaction,
+    finish_import_transaction,
+    prune_backup_history,
+    rollback_import_transaction,
+)
 from codex_sync_desktop.core.sessions import apply_import, export_sanitized_sessions, plan_import
 from tests.helpers import write_session
 
@@ -63,13 +72,112 @@ class SessionSyncTests(unittest.TestCase):
             export_sanitized_sessions(source_home, vault, "Office Mac")
             conflict_plan = plan_import(target_home, vault, "office-mac")
             self.assertEqual(conflict_plan.counts, {"conflict": 1})
+            before_merge = imported.read_bytes()
+            transaction = create_import_transaction(target_home, conflict_plan)
             conflict_result = apply_import(conflict_plan)
-            self.assertEqual(len(conflict_result["conflicts"]), 1)
+            finish_import_transaction(transaction, conflict_result["counts"])
+            self.assertEqual(len(conflict_result["conflicts"]), 0)
             self.assertEqual(len(conflict_result["merged"]), 1)
-            self.assertTrue(conflict_result["conflicts"][0].exists())
+            self.assertFalse((target_home / "import-conflicts").exists())
             merged_text = conflict_result["merged"][0].read_text(encoding="utf-8")
             self.assertIn("super-secret-value", merged_text)
             self.assertIn('"message":"new"', merged_text)
+            rollback = rollback_import_transaction(target_home, transaction)
+            self.assertEqual(rollback["restored_sessions"], 1)
+            self.assertEqual(imported.read_bytes(), before_merge)
+
+    def test_transaction_rolls_back_copied_session_and_rejects_later_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            target_home = root / "target"
+            vault = root / "vault"
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            write_session(source_home, session_id, "Imported question", "Imported answer")
+            export_sanitized_sessions(source_home, vault, "Office Mac")
+            plan = plan_import(target_home, vault, "office-mac")
+            transaction = create_import_transaction(target_home, plan)
+            result = apply_import(plan)
+            finish_import_transaction(transaction, result["counts"])
+            imported = result["copied"][0]
+            with imported.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"timestamp": "2026-07-27T12:00:00Z", "type": "event_msg", "payload": {"type": "user_message", "message": "new local work"}}) + "\n")
+            with self.assertRaisesRegex(RuntimeError, "changed after import"):
+                rollback_import_transaction(target_home, transaction)
+            self.assertTrue(imported.exists())
+
+    def test_transaction_removes_unchanged_copied_session_on_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            target_home = root / "target"
+            vault = root / "vault"
+            write_session(source_home, "019f9999-1111-7222-8333-444455556666", "Imported question", "Imported answer")
+            export_sanitized_sessions(source_home, vault, "Office Mac")
+            plan = plan_import(target_home, vault, "office-mac")
+            transaction = create_import_transaction(target_home, plan)
+            result = apply_import(plan)
+            finish_import_transaction(transaction, result["counts"])
+            imported = result["copied"][0]
+            rollback = rollback_import_transaction(target_home, transaction)
+            self.assertEqual(rollback["removed"], 1)
+            self.assertFalse(imported.exists())
+
+    def test_transaction_restores_database_and_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            target_home = root / "target"
+            vault = root / "vault"
+            target_home.mkdir()
+            database = target_home / "state_test.sqlite"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("CREATE TABLE marker (value TEXT)")
+                connection.execute("INSERT INTO marker VALUES ('before')")
+                connection.commit()
+            index = target_home / "session_index.jsonl"
+            index.write_text("before-index\n", encoding="utf-8")
+            write_session(source_home, "019f9999-1111-7222-8333-444455556666")
+            export_sanitized_sessions(source_home, vault, "Office Mac")
+            plan = plan_import(target_home, vault, "office-mac")
+            transaction = create_import_transaction(target_home, plan)
+            result = apply_import(plan)
+            finish_import_transaction(transaction, result["counts"])
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("UPDATE marker SET value = 'after'")
+                connection.commit()
+            index.write_text("after-index\n", encoding="utf-8")
+            rollback = rollback_import_transaction(target_home, transaction)
+            with closing(sqlite3.connect(database)) as connection:
+                value = connection.execute("SELECT value FROM marker").fetchone()[0]
+            self.assertEqual(value, "before")
+            self.assertEqual(index.read_text(encoding="utf-8"), "before-index\n")
+            self.assertEqual(rollback["restored_state"], 2)
+
+    def test_prune_keeps_only_latest_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            root = codex_home / "sync-backups"
+            for name in ("20260101", "20260102", "20260103"):
+                path = root / name
+                path.mkdir(parents=True)
+                (path / "backup.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(prune_backup_history(codex_home, keep=1), 2)
+            self.assertEqual([item.name for item in root.iterdir()], ["20260103"])
+
+    def test_one_click_cleanup_removes_all_backup_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            for name in ("sync-backups", "import-backups", "import-conflicts"):
+                path = codex_home / name / "batch"
+                path.mkdir(parents=True)
+                (path / "data.bin").write_bytes(b"1234")
+            report = clear_backup_storage(codex_home)
+            self.assertEqual(report["roots"], 3)
+            self.assertEqual(report["files"], 3)
+            self.assertEqual(report["bytes"], 12)
+            for name in ("sync-backups", "import-backups", "import-conflicts"):
+                self.assertFalse((codex_home / name).exists())
 
     def test_rejects_modified_manifest_file(self):
         with tempfile.TemporaryDirectory() as directory:
