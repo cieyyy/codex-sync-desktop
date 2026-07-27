@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, Iterator, Mapping
 from .config import device_slug
 from .models import ExportReport, ImportItem, ImportPlan
 from .redaction import sanitize_record
+from .titles import read_thread_titles
 
 
 def iter_session_files(codex_home: Path) -> Iterator[tuple[str, Path]]:
@@ -23,6 +24,15 @@ def iter_session_files(codex_home: Path) -> Iterator[tuple[str, Path]]:
                 yield root_name, path
 
 
+def iter_active_session_files(codex_home: Path) -> Iterator[tuple[str, Path]]:
+    root = codex_home / "sessions"
+    if not root.exists():
+        return
+    for path in sorted(root.rglob("*.jsonl")):
+        if path.is_file():
+            yield "sessions", path
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -32,17 +42,22 @@ def sha256_file(path: Path) -> str:
 
 
 def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -> ExportReport:
+    if not (codex_home / "sessions").is_dir():
+        raise FileNotFoundError(f"Active Codex sessions directory not found: {codex_home / 'sessions'}")
     slug = device_slug(device_name)
     device_root = vault / "sessions-text" / "devices" / slug
     output_root = device_root / "sessions"
     output_root.mkdir(parents=True, exist_ok=True)
     report = ExportReport(device=device_name, output=device_root)
     manifest_sessions = []
+    expected_outputs: set[Path] = set()
+    titles = read_thread_titles(codex_home)
 
-    for root_name, source in iter_session_files(codex_home):
+    for root_name, source in iter_active_session_files(codex_home):
         relative_in_root = source.relative_to(codex_home / root_name)
         manifest_path = (Path(root_name) / relative_in_root).as_posix()
         destination = output_root / root_name / relative_in_root
+        expected_outputs.add(destination.resolve())
         result = _sanitize_file(source, destination)
         report.sessions += 1
         report.source_bytes += source.stat().st_size
@@ -53,19 +68,26 @@ def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -
         report.media_removed += result["media"]
         report.secrets_redacted += result["secrets"]
         report.changed_files += int(result["changed"])
-        manifest_sessions.append({
+        task_id = _session_id_from_file(source)
+        entry = {
             "path": manifest_path,
-            "task_id": _task_id_from_filename(source.name),
+            "task_id": task_id,
             "sha256": result["sha256"],
             "bytes": result["bytes"],
-        })
+        }
+        if titles.get(task_id):
+            entry["title"] = titles[task_id]
+        manifest_sessions.append(entry)
+
+    report.removed_files = _remove_stale_exports(output_root, expected_outputs)
+    report.changed_files += report.removed_files
 
     manifest = {
-        "format": 3,
+        "format": 4,
         "device": device_name,
         "device_slug": slug,
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "content": "complete textual Codex session records; inline media and binary attachments omitted; sensitive fields preserved",
+        "content": "active textual Codex session records and titles; archived sessions, inline media, and binary attachments omitted; sensitive fields preserved",
         "conflict_policy": "merge by semantic content and timestamp; preserve richer duplicate records",
         "sessions": manifest_sessions,
     }
@@ -94,6 +116,7 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
     format_version = int(manifest.get("format", 1))
     source_root = device_root / "sessions"
     plan = ImportPlan(source_device=source_device)
+    local_titles = read_thread_titles(codex_home)
 
     for entry in entries:
         relative = _safe_relative(str(entry.get("path", "")))
@@ -106,6 +129,10 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
         if expected_hash and actual_hash != expected_hash:
             plan.items.append(ImportItem("invalid-source-hash", relative, source, destination, detail=f"expected {expected_hash}, got {actual_hash}"))
             continue
+        task_id = str(entry.get("task_id") or "").strip()
+        source_title = str(entry.get("title") or "").strip()[:500]
+        if task_id and source_title and local_titles.get(task_id) != source_title:
+            plan.title_updates[task_id] = source_title
         if not destination.exists():
             plan.items.append(ImportItem("copy", relative, source, destination))
             continue
@@ -337,6 +364,21 @@ def _copy_atomic(source: Path, destination: Path) -> None:
     temp.replace(destination)
 
 
+def _remove_stale_exports(output_root: Path, expected: set[Path]) -> int:
+    removed = 0
+    for path in output_root.rglob("*.jsonl"):
+        if path.is_file() and path.resolve() not in expected:
+            path.unlink()
+            removed += 1
+    directories = sorted((path for path in output_root.rglob("*") if path.is_dir()), key=lambda path: len(path.parts), reverse=True)
+    for directory in directories:
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
 def _safe_relative(value: str) -> str:
     normalized = value.replace("\\", "/").strip("/")
     parts = normalized.split("/")
@@ -354,3 +396,22 @@ def _resolve_manifest_paths(source_root: Path, codex_home: Path, relative: str, 
 def _task_id_from_filename(name: str) -> str:
     stem = name[:-6] if name.endswith(".jsonl") else name
     return stem.rsplit("-", 1)[-1] if "-" in stem else stem
+
+
+def _session_id_from_file(path: Path) -> str:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for raw_line in handle:
+                try:
+                    item = json.loads(raw_line)
+                except ValueError:
+                    continue
+                if item.get("type") != "session_meta":
+                    continue
+                payload = item.get("payload") or {}
+                task_id = str(payload.get("id") or payload.get("session_id") or "").strip()
+                if task_id:
+                    return task_id
+    except OSError:
+        pass
+    return _task_id_from_filename(path.name)

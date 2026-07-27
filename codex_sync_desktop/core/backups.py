@@ -26,6 +26,14 @@ def find_state_databases(codex_home: Path) -> list[Path]:
     return sorted(path for path in candidates if path.is_file())
 
 
+def select_state_database(paths: Iterable[Path]) -> Path:
+    candidates = list(paths)
+    if not candidates:
+        raise ValueError("No Codex state database candidates")
+    modern = [path for path in candidates if path.name == "codex-dev.db"]
+    return max(modern or candidates, key=lambda path: path.stat().st_mtime)
+
+
 def create_consistent_backup(codex_home: Path, backup_root: Path | None = None) -> Path:
     root = backup_root or codex_home / "sync-backups" / timestamp_slug()
     root.mkdir(parents=True, exist_ok=False)

@@ -434,11 +434,11 @@ class CodexSyncApp(tk.Tk):
             return
         def work() -> str:
             report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
-            self.logger.info("已导出 %s 个完整文字会话，保留敏感字段，移除 %s 个媒体或二进制块", report.sessions, report.media_removed)
+            self.logger.info("已导出 %s 个活动文字会话，移除 %s 个不再同步的旧副本和 %s 个媒体或二进制块", report.sessions, report.removed_files, report.media_removed)
             if self.settings.auto_push_after_export:
                 result = VaultGit(vault).commit_and_push(f"sync: update {device_slug(self.settings.device_name)}")
                 self._checked_git(result)
-            return f"导出完成：{report.sessions} 个会话，{report.output_bytes / 1024 / 1024:.1f} MiB"
+            return f"结果：成功\n活动会话：{report.sessions}\n停止同步：{report.removed_files}\n失败：0"
         self._run_task("导出并推送", work, self.refresh_sources)
 
     def preview_import(self) -> None:
@@ -473,7 +473,7 @@ class CodexSyncApp(tk.Tk):
             transaction = create_import_transaction(self.settings.codex_path, plan)
             try:
                 result = apply_import(plan)
-                repair = repair_indexes(self.settings.codex_path, {}, create_backup=False)
+                repair = repair_indexes(self.settings.codex_path, {}, create_backup=False, preferred_titles=plan.title_updates)
                 finish_import_transaction(transaction, result["counts"])
                 prune_backup_history(self.settings.codex_path, keep=1)
             except Exception:
@@ -485,6 +485,7 @@ class CodexSyncApp(tk.Tk):
                 f"新增：{len(result['copied'])}\n"
                 f"自动合并：{len(result['merged'])}\n"
                 f"相同：{plan.counts.get('identical', 0)}\n"
+                f"标题更新：{len(plan.title_updates)}\n"
                 f"侧栏新增：{repair.inserted}\n"
                 "失败：0"
             )
@@ -528,6 +529,7 @@ class CodexSyncApp(tk.Tk):
         for action in ("copy", "identical", "conflict", "missing-source", "invalid-source-hash"):
             count = plan.counts.get(action, 0)
             self.import_tree.insert("", "end", values=(display_names[action], count, meanings[action]))
+        self.import_tree.insert("", "end", values=("标题更新", len(plan.title_updates), "采用所选来源设备的非空标题"))
 
     def _require_vault(self) -> Path | None:
         vault = self.settings.vault

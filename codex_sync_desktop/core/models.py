@@ -33,6 +33,7 @@ class ExportReport:
     invalid_lines: int = 0
     media_removed: int = 0
     secrets_redacted: int = 0
+    removed_files: int = 0
     output: Optional[Path] = None
 
 
@@ -50,6 +51,7 @@ class ImportItem:
 class ImportPlan:
     source_device: str
     items: List[ImportItem] = field(default_factory=list)
+    title_updates: Dict[str, str] = field(default_factory=dict)
 
     @property
     def counts(self) -> Dict[str, int]:

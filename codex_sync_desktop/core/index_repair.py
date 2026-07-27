@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 
-from .backups import create_consistent_backup, find_state_databases
+from .backups import create_consistent_backup, find_state_databases, select_state_database
 from .models import RepairReport, SessionInfo
 from .pathmap import map_path
 from .sessions import iter_session_files
@@ -62,7 +62,12 @@ def parse_session(path: Path, codex_home: Path, mappings: Mapping[str, str] | No
     )
 
 
-def repair_indexes(codex_home: Path, mappings: Mapping[str, str] | None = None, create_backup: bool = True) -> RepairReport:
+def repair_indexes(
+    codex_home: Path,
+    mappings: Mapping[str, str] | None = None,
+    create_backup: bool = True,
+    preferred_titles: Mapping[str, str] | None = None,
+) -> RepairReport:
     report = RepairReport()
     sessions = []
     for _, path in iter_session_files(codex_home):
@@ -83,17 +88,20 @@ def repair_indexes(codex_home: Path, mappings: Mapping[str, str] | None = None, 
         connection.row_factory = sqlite3.Row
         db_names = {row["id"]: row["title"] for row in connection.execute("SELECT id, title FROM threads")}
         existing_names.update({key: value for key, value in db_names.items() if value})
+        imported_names = {str(key): str(value).strip() for key, value in (preferred_titles or {}).items() if str(value).strip()}
+        resolved_names: Dict[str, str] = {}
         columns = {row[1] for row in connection.execute("PRAGMA table_info(threads)")}
         for session in sessions:
-            preferred_title = existing_names.get(session.session_id, session.title)
+            preferred_title = imported_names.get(session.session_id) or existing_names.get(session.session_id, session.title)
             session.title = preferred_title
+            resolved_names[session.session_id] = preferred_title
             if session.session_id in db_names:
                 report.updated += _update_existing(connection, columns, session)
             else:
                 _insert_thread(connection, columns, session)
                 report.inserted += 1
         connection.commit()
-    _write_session_index(codex_home / "session_index.jsonl", sessions, existing_names)
+    _write_session_index(codex_home / "session_index.jsonl", sessions, resolved_names)
     report.index_entries = len(sessions)
     if len(databases) > 1:
         report.warnings.append(f"Updated {database.name}; found {len(databases)} databases with threads tables")
@@ -138,7 +146,7 @@ def _update_existing(connection: sqlite3.Connection, columns: set[str], session:
     allowed = {
         "rollout_path": str(session.path), "cwd": session.cwd, "updated_at": session.updated_at,
         "updated_at_ms": session.updated_at * 1000, "recency_at": session.updated_at,
-        "recency_at_ms": session.updated_at * 1000,
+        "recency_at_ms": session.updated_at * 1000, "title": session.title, "name": session.title,
     }
     selected = {key: value for key, value in allowed.items() if key in columns}
     if not selected:
@@ -178,8 +186,7 @@ def _read_existing_names(path: Path) -> Dict[str, str]:
 
 
 def _select_database(paths: list[Path]) -> Path:
-    state_files = [path for path in paths if path.name.startswith("state_")]
-    return max(state_files or paths, key=lambda path: path.stat().st_mtime)
+    return select_state_database(paths)
 
 
 def _has_threads_table(path: Path) -> bool:

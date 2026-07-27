@@ -13,10 +13,70 @@ from codex_sync_desktop.core.backups import (
     rollback_import_transaction,
 )
 from codex_sync_desktop.core.sessions import apply_import, export_sanitized_sessions, plan_import
-from tests.helpers import write_session
+from tests.helpers import create_state_database, write_session
 
 
 class SessionSyncTests(unittest.TestCase):
+    def test_missing_active_sessions_directory_does_not_clear_existing_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            vault = root / "vault"
+            exported = vault / "sessions-text" / "devices" / "office-mac" / "sessions" / "sessions" / "old.jsonl"
+            exported.parent.mkdir(parents=True)
+            exported.write_text("preserve", encoding="utf-8")
+
+            with self.assertRaises(FileNotFoundError):
+                export_sanitized_sessions(source_home, vault, "Office Mac")
+
+            self.assertEqual(exported.read_text(encoding="utf-8"), "preserve")
+
+    def test_export_excludes_archived_session_and_removes_old_device_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            vault = root / "vault"
+            session = write_session(source_home, "019f9999-1111-7222-8333-444455556666")
+            first = export_sanitized_sessions(source_home, vault, "Office Mac")
+            self.assertEqual(first.sessions, 1)
+            exported_root = vault / "sessions-text" / "devices" / "office-mac" / "sessions"
+            self.assertEqual(len(list(exported_root.rglob("*.jsonl"))), 1)
+
+            archived = source_home / "archived_sessions" / session.relative_to(source_home / "sessions")
+            archived.parent.mkdir(parents=True)
+            session.replace(archived)
+            second = export_sanitized_sessions(source_home, vault, "Office Mac")
+
+            self.assertEqual(second.sessions, 0)
+            self.assertEqual(second.removed_files, 1)
+            self.assertEqual(list(exported_root.rglob("*.jsonl")), [])
+            manifest = json.loads((exported_root.parent / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["sessions"], [])
+
+    def test_exported_title_is_planned_as_source_preferred_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            target_home = root / "target"
+            vault = root / "vault"
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            write_session(source_home, session_id)
+            source_database = create_state_database(source_home)
+            with closing(sqlite3.connect(source_database)) as connection:
+                connection.execute("INSERT INTO threads (id,rollout_path,created_at,updated_at,source,model_provider,cwd,title,sandbox_policy,approval_mode) VALUES (?,?,?,?,?,?,?,?,?,?)", (session_id, "source", 1, 1, "app", "openai", "/source", "Renamed on Mac", "{}", "never"))
+                connection.commit()
+            target_database = create_state_database(target_home)
+            with closing(sqlite3.connect(target_database)) as connection:
+                connection.execute("INSERT INTO threads (id,rollout_path,created_at,updated_at,source,model_provider,cwd,title,sandbox_policy,approval_mode) VALUES (?,?,?,?,?,?,?,?,?,?)", (session_id, "target", 1, 1, "app", "openai", "/target", "Old Windows name", "{}", "never"))
+                connection.commit()
+
+            export_sanitized_sessions(source_home, vault, "Office Mac")
+            manifest = json.loads((vault / "sessions-text" / "devices" / "office-mac" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["format"], 4)
+            self.assertEqual(manifest["sessions"][0]["title"], "Renamed on Mac")
+            plan = plan_import(target_home, vault, "office-mac")
+            self.assertEqual(plan.title_updates, {session_id: "Renamed on Mac"})
+
     def test_raw_destination_is_identical_to_its_sanitized_export(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

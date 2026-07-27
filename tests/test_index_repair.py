@@ -67,6 +67,41 @@ class IndexRepairTests(unittest.TestCase):
             with closing(sqlite3.connect(database)) as connection:
                 self.assertEqual(connection.execute("SELECT title FROM threads WHERE id=?", (session_id,)).fetchone()[0], "My saved title")
 
+    def test_source_preferred_title_updates_database_name_and_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            database = create_state_database(codex_home)
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            write_session(codex_home, session_id, "Original prompt")
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("INSERT INTO threads (id,rollout_path,created_at,updated_at,source,model_provider,cwd,title,sandbox_policy,approval_mode,name) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (session_id, "old", 1, 1, "app", "openai", "/old", "Old local title", "{}", "never", "Old local title"))
+                connection.commit()
+
+            repair_indexes(codex_home, create_backup=False, preferred_titles={session_id: "Renamed on source"})
+
+            with closing(sqlite3.connect(database)) as connection:
+                title, name = connection.execute("SELECT title, name FROM threads WHERE id=?", (session_id,)).fetchone()
+            self.assertEqual((title, name), ("Renamed on source", "Renamed on source"))
+            index = [json.loads(line) for line in (codex_home / "session_index.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(index[0]["thread_name"], "Renamed on source")
+
+    def test_modern_codex_database_is_preferred_over_legacy_state_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            legacy = create_state_database(codex_home)
+            modern_root = codex_home / "sqlite"
+            modern_root.mkdir()
+            modern = modern_root / "codex-dev.db"
+            legacy.replace(modern)
+            create_state_database(codex_home)
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            write_session(codex_home, session_id)
+
+            repair_indexes(codex_home, create_backup=False)
+
+            with closing(sqlite3.connect(modern)) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM threads WHERE id=?", (session_id,)).fetchone()[0], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
