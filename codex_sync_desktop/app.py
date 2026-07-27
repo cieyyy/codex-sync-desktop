@@ -51,6 +51,11 @@ class CodexSyncApp(tk.Tk):
         self.after(120, self._poll_messages)
         self.after(250, self.refresh_all)
 
+    def report_callback_exception(self, exc_type: type[BaseException], exc: BaseException, trace: Any) -> None:
+        self.logger.error("界面操作失败：%s", exc, exc_info=(exc_type, exc, trace))
+        self.busy_label.configure(text="失败")
+        messagebox.showerror("界面操作失败", str(exc))
+
     def _configure_logging(self) -> None:
         app_home = self.store.app_home
         app_home.mkdir(parents=True, exist_ok=True)
@@ -210,7 +215,16 @@ class CodexSyncApp(tk.Tk):
         return tree
 
     def refresh_all(self) -> None:
-        diagnostics = collect_diagnostics(self.settings.codex_path, self.settings.vault)
+        self.overview_tree.delete(*self.overview_tree.get_children())
+        self.overview_tree.insert("", "end", values=("环境检查", "检查中", "正在读取 Codex 和 Git 环境"))
+        self._run_task(
+            "刷新检查",
+            lambda: collect_diagnostics(self.settings.codex_path, self.settings.vault),
+            self._show_overview,
+            callback_with_result=True,
+        )
+
+    def _show_overview(self, diagnostics: dict[str, Any]) -> None:
         self.overview_tree.delete(*self.overview_tree.get_children())
         rows = [
             ("Codex 数据目录", "正常" if diagnostics["codex_home_exists"] else "未找到", diagnostics["codex_home"]),
@@ -225,10 +239,16 @@ class CodexSyncApp(tk.Tk):
         ]
         for row in rows:
             self.overview_tree.insert("", "end", values=row)
-        self.refresh_devices()
-        self.refresh_conflicts()
-        self.refresh_backups()
-        self.refresh_paths()
+        for label, refresh in (
+            ("设备", self.refresh_devices),
+            ("冲突", self.refresh_conflicts),
+            ("备份", self.refresh_backups),
+            ("路径映射", self.refresh_paths),
+        ):
+            try:
+                refresh()
+            except Exception:
+                self.logger.exception("刷新%s失败", label)
 
     def refresh_devices(self) -> None:
         self.devices_tree.delete(*self.devices_tree.get_children())
@@ -335,7 +355,7 @@ class CodexSyncApp(tk.Tk):
             if self.settings.auto_pull_before_import:
                 self._checked_git(VaultGit(vault).pull())
             return plan_import(self.settings.codex_path, vault, source)
-        self._run_task("预览导入", work, self._show_import_plan)
+        self._run_task("预览导入", work, self._show_import_plan, callback_with_result=True)
 
     def import_and_repair(self) -> None:
         vault = self._require_vault()
@@ -405,7 +425,13 @@ class CodexSyncApp(tk.Tk):
             raise RuntimeError(result.output or "Git command failed")
         return result.output
 
-    def _run_task(self, label: str, function: Callable[[], Any], callback: Callable[[Any], None] | None = None) -> None:
+    def _run_task(
+        self,
+        label: str,
+        function: Callable[[], Any],
+        callback: Callable[..., None] | None = None,
+        callback_with_result: bool = False,
+    ) -> None:
         if self._busy:
             return
         self._busy = True
@@ -414,7 +440,7 @@ class CodexSyncApp(tk.Tk):
         def worker() -> None:
             try:
                 result = function()
-                self.messages.put(("success", label, result, callback))
+                self.messages.put(("success", label, result, callback, callback_with_result))
             except Exception as exc:
                 self.messages.put(("error", label, exc))
         threading.Thread(target=worker, daemon=True).start()
@@ -427,12 +453,12 @@ class CodexSyncApp(tk.Tk):
                     self.log_text.insert("end", message[1] + "\n")
                     self.log_text.see("end")
                 elif message[0] == "success":
-                    _, label, result, callback = message
+                    _, label, result, callback, callback_with_result = message
                     self._busy = False
                     self.busy_label.configure(text="就绪")
                     self.logger.info("完成：%s", label)
                     if callback:
-                        callback(result) if label == "预览导入" else callback()
+                        callback(result) if callback_with_result else callback()
                     if isinstance(result, str) and result:
                         messagebox.showinfo(label, result)
                     elif isinstance(result, Path):
@@ -442,6 +468,9 @@ class CodexSyncApp(tk.Tk):
                     self._busy = False
                     self.busy_label.configure(text="失败")
                     self.logger.exception("%s 失败：%s", label, exc)
+                    if label == "刷新检查":
+                        self.overview_tree.delete(*self.overview_tree.get_children())
+                        self.overview_tree.insert("", "end", values=("环境检查", "失败", str(exc)))
                     messagebox.showerror(label + "失败", str(exc))
         except queue.Empty:
             pass
