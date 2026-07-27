@@ -8,6 +8,7 @@ import queue
 import subprocess
 import sys
 import threading
+import traceback
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -442,7 +443,7 @@ class CodexSyncApp(tk.Tk):
                 result = function()
                 self.messages.put(("success", label, result, callback, callback_with_result))
             except Exception as exc:
-                self.messages.put(("error", label, exc))
+                self.messages.put(("error", label, exc, traceback.format_exc()))
         threading.Thread(target=worker, daemon=True).start()
 
     def _poll_messages(self) -> None:
@@ -464,10 +465,10 @@ class CodexSyncApp(tk.Tk):
                     elif isinstance(result, Path):
                         messagebox.showinfo(label, str(result))
                 elif message[0] == "error":
-                    _, label, exc = message
+                    _, label, exc, error_trace = message
                     self._busy = False
                     self.busy_label.configure(text="失败")
-                    self.logger.exception("%s 失败：%s", label, exc)
+                    self.logger.error("%s 失败：%s\n%s", label, exc, error_trace)
                     if label == "刷新检查":
                         self.overview_tree.delete(*self.overview_tree.get_children())
                         self.overview_tree.insert("", "end", values=("环境检查", "失败", str(exc)))

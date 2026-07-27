@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import platform
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -11,13 +12,23 @@ from .processes import running_codex_processes
 from .sessions import iter_session_files
 
 
+def platform_description() -> str:
+    if sys.platform == "win32" and hasattr(sys, "getwindowsversion"):
+        version = sys.getwindowsversion()
+        return f"Windows-{version.major}.{version.minor}.{version.build}"
+    try:
+        return platform.platform()
+    except (AttributeError, OSError):
+        return sys.platform
+
+
 def collect_diagnostics(codex_home: Path, vault: Path | None = None) -> Dict[str, Any]:
     processes = running_codex_processes()
     sessions = sum(1 for _ in iter_session_files(codex_home)) if codex_home.exists() else 0
     databases = find_state_databases(codex_home) if codex_home.exists() else []
     gh_status = github_auth_status()
     result: Dict[str, Any] = {
-        "platform": platform.platform(),
+        "platform": platform_description(),
         "codex_home": str(codex_home),
         "codex_home_exists": codex_home.exists(),
         "sessions": sessions,
