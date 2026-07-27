@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import sys
 from pathlib import Path
@@ -23,7 +24,7 @@ def platform_description() -> str:
 
 
 def collect_diagnostics(codex_home: Path, vault: Path | None = None) -> Dict[str, Any]:
-    processes = running_codex_processes()
+    processes = running_codex_processes(os.getpid())
     sessions = sum(1 for _ in iter_session_files(codex_home)) if codex_home.exists() else 0
     databases = find_state_databases(codex_home) if codex_home.exists() else []
     gh_status = github_auth_status()

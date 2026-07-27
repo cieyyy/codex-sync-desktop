@@ -26,16 +26,21 @@ def running_codex_processes(current_pid: int | None = None) -> List[ProcessInfo]
         result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=8)
     except (OSError, subprocess.TimeoutExpired):
         return []
+    output = result.stdout if isinstance(result.stdout, str) else ""
     matches: List[ProcessInfo] = []
     if platform.system() == "Windows":
-        for row in csv.reader(StringIO(result.stdout)):
+        for row in csv.reader(StringIO(output)):
             if len(row) < 2:
                 continue
             name, pid_text = row[0], row[1]
-            if _is_blocked(name) and int(pid_text) != current_pid:
-                matches.append(ProcessInfo(int(pid_text), name))
+            try:
+                pid = int(pid_text)
+            except (TypeError, ValueError):
+                continue
+            if _is_blocked(name) and pid != current_pid:
+                matches.append(ProcessInfo(pid, name))
     else:
-        for line in result.stdout.splitlines():
+        for line in output.splitlines():
             parts = line.strip().split(None, 1)
             if len(parts) != 2 or not parts[0].isdigit():
                 continue
