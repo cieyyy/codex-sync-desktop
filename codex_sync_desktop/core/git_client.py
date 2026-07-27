@@ -16,6 +16,17 @@ MACOS_COMMAND_PATHS = (
     "/opt/local/bin",
 )
 
+TRANSIENT_PUSH_MARKERS = (
+    "remote end hung up unexpectedly",
+    "rpc failed",
+    "http/2 stream",
+    "unexpected disconnect",
+    "connection reset",
+    "connection was reset",
+    "operation timed out",
+    "network is unreachable",
+)
+
 
 @dataclass
 class CommandResult:
@@ -45,12 +56,24 @@ def summarize_pull(output: str) -> str:
 
 def compact_failure_reason(output: str, fallback: str = "Git 命令执行失败") -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
+    lowered = output.lower()
+    if "non-fast-forward" in lowered or "fetch first" in lowered:
+        return "远端已有新提交，请先拉取仓库后重试。"
+    if "authentication failed" in lowered or "permission denied" in lowered:
+        return "GitHub 身份认证失败，请重新登录或检查仓库权限。"
+    if is_transient_push_failure(output):
+        return "连接在上传时中断；软件已自动使用 HTTP/1.1 重试，但仍未成功，请检查网络后重试。"
     markers = ("fatal:", "error:", "failed", "denied", "authentication", "could not", "conflict")
     reason = next(
         (line for line in reversed(lines) if any(marker in line.lower() for marker in markers)),
         lines[-1] if lines else fallback,
     )
     return reason if len(reason) <= 300 else reason[:297] + "..."
+
+
+def is_transient_push_failure(output: str) -> bool:
+    lowered = output.lower()
+    return any(marker in lowered for marker in TRANSIENT_PUSH_MARKERS)
 
 
 def command_environment(
@@ -123,9 +146,21 @@ class VaultGit:
         if not add.ok:
             return add
         staged = run(["git", "diff", "--cached", "--quiet"], self.path)
-        if staged.returncode == 0:
-            return CommandResult(True, "No changes to push", 0)
-        commit = run(["git", "commit", "-m", message], self.path)
-        if not commit.ok:
-            return commit
-        return run(["git", "push"], self.path, timeout=300)
+        if staged.returncode not in (0, 1):
+            return staged
+        if staged.returncode == 1:
+            commit = run(["git", "commit", "-m", message], self.path)
+            if not commit.ok:
+                return commit
+
+        # Always push: a previous network failure may have left a clean working
+        # tree with one or more local commits still ahead of the remote.
+        push = run(["git", "push"], self.path, timeout=600)
+        if push.ok or not is_transient_push_failure(push.output):
+            return push
+
+        retry = run(["git", "-c", "http.version=HTTP/1.1", "push"], self.path, timeout=600)
+        if retry.ok:
+            return retry
+        combined = "\n".join(part for part in (push.output, "HTTP/1.1 retry:", retry.output) if part)
+        return CommandResult(False, combined, retry.returncode)

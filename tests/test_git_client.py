@@ -7,8 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from codex_sync_desktop.core.git_client import (
+    CommandResult,
+    VaultGit,
     command_environment,
     compact_failure_reason,
+    is_transient_push_failure,
     run,
     summarize_pull,
 )
@@ -82,7 +85,50 @@ Fast-forward
     def test_failure_reason_returns_one_relevant_line(self):
         output = "remote: checking credentials\nfatal: Authentication failed for repository\nlong trailing detail"
 
-        self.assertEqual(compact_failure_reason(output), "fatal: Authentication failed for repository")
+        self.assertEqual(compact_failure_reason(output), "GitHub 身份认证失败，请重新登录或检查仓库权限。")
+
+    def test_transient_push_failure_has_actionable_reason(self):
+        output = "error: RPC failed; curl 92 HTTP/2 stream was not closed cleanly\nfatal: the remote end hung up unexpectedly"
+
+        self.assertTrue(is_transient_push_failure(output))
+        self.assertEqual(
+            compact_failure_reason(output),
+            "连接在上传时中断；软件已自动使用 HTTP/1.1 重试，但仍未成功，请检查网络后重试。",
+        )
+
+
+class GitPushRecoveryTests(unittest.TestCase):
+    @patch("codex_sync_desktop.core.git_client.run")
+    def test_pushes_pending_commit_when_worktree_has_no_new_changes(self, mocked_run):
+        mocked_run.side_effect = [
+            CommandResult(True, "", 0),
+            CommandResult(True, "", 0),
+            CommandResult(True, "pushed pending commit", 0),
+        ]
+
+        result = VaultGit(Path("/vault")).commit_and_push("sync")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(mocked_run.call_args_list[-1].args[0], ["git", "push"])
+        self.assertEqual(mocked_run.call_count, 3)
+
+    @patch("codex_sync_desktop.core.git_client.run")
+    def test_retries_transient_push_with_http_1_1(self, mocked_run):
+        mocked_run.side_effect = [
+            CommandResult(True, "", 0),
+            CommandResult(False, "", 1),
+            CommandResult(True, "committed", 0),
+            CommandResult(False, "fatal: the remote end hung up unexpectedly", 1),
+            CommandResult(True, "pushed with fallback", 0),
+        ]
+
+        result = VaultGit(Path("/vault")).commit_and_push("sync")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            mocked_run.call_args_list[-1].args[0],
+            ["git", "-c", "http.version=HTTP/1.1", "push"],
+        )
 
 
 if __name__ == "__main__":
