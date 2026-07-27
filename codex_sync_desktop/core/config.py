@@ -42,6 +42,9 @@ class Settings:
     path_mappings: Dict[str, str] = field(default_factory=dict)
     auto_pull_before_import: bool = True
     auto_push_after_export: bool = True
+    proxy_url: str = ""
+    china_network_mode: bool = False
+    onboarding_complete: bool = False
 
     @property
     def codex_path(self) -> Path:

@@ -41,6 +41,12 @@ class GitClientEnvironmentTests(unittest.TestCase):
         env = command_environment({"PATH": original_path}, platform_name="linux")
         self.assertEqual(env["PATH"], original_path)
 
+    def test_proxy_is_applied_to_git_and_github_cli_environment(self):
+        env = command_environment({"PATH": "/usr/bin"}, platform_name="linux", proxy_url="http://127.0.0.1:7890")
+
+        self.assertEqual(env["HTTP_PROXY"], "http://127.0.0.1:7890")
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:7890")
+
     @patch("codex_sync_desktop.core.git_client.subprocess.run")
     @patch("codex_sync_desktop.core.git_client.sys.platform", "darwin")
     @patch.dict(os.environ, {"PATH": os.pathsep.join(("/usr/bin", "/bin"))}, clear=True)
@@ -98,6 +104,34 @@ Fast-forward
 
 
 class GitPushRecoveryTests(unittest.TestCase):
+    @patch("codex_sync_desktop.core.git_client.run")
+    def test_sets_upstream_for_first_commit_in_new_private_repository(self, mocked_run):
+        mocked_run.side_effect = [
+            CommandResult(True, "", 0),
+            CommandResult(False, "", 1),
+            CommandResult(True, "committed", 0),
+            CommandResult(False, "fatal: The current branch main has no upstream branch.", 128),
+            CommandResult(True, "branch 'main' set up to track 'origin/main'", 0),
+        ]
+
+        result = VaultGit(Path("/vault")).commit_and_push("first sync")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(mocked_run.call_args_list[-1].args[0], ["git", "push", "--set-upstream", "origin", "HEAD"])
+
+    @patch("codex_sync_desktop.core.git_client.run")
+    def test_empty_new_private_repository_is_ready_to_sync(self, mocked_run):
+        mocked_run.return_value = CommandResult(
+            False,
+            "Your configuration specifies to merge with refs/heads/main from the remote, but no such ref was fetched.",
+            1,
+        )
+
+        result = VaultGit(Path("/vault")).pull()
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, "Remote repository is empty")
+
     @patch("codex_sync_desktop.core.git_client.run")
     def test_pushes_pending_commit_when_worktree_has_no_new_changes(self, mocked_run):
         mocked_run.side_effect = [

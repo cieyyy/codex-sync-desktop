@@ -68,9 +68,11 @@ def remediation_text(diagnostics: Dict[str, Any]) -> str:
         item = f"{label}：\n{lfs_install}"
         (required if diagnostics.get("git_lfs_required") else optional).append(item)
     if not diagnostics.get("gh"):
-        optional.append(f"GitHub CLI（可选，Git 已能拉取/推送时无需安装）：\n{gh_install}")
+        item = f"GitHub CLI（首次自动创建私有仓库必需）：\n{gh_install}"
+        (required if not diagnostics.get("vault_exists") else optional).append(item)
     elif not diagnostics.get("gh_authenticated"):
-        optional.append("GitHub CLI（可选）：\ngh auth login\n如果 Git 已能正常 pull/push，可以不处理。")
+        item = "GitHub 登录（首次自动配置必需）：\ngh auth login\n也可以回到软件点击“首次配置向导”。"
+        (required if not diagnostics.get("vault_exists") else optional).append(item)
 
     sections.append("必须处理" if required else "必须处理：无")
     for index, item in enumerate(required, 1):
@@ -81,15 +83,16 @@ def remediation_text(diagnostics: Dict[str, Any]) -> str:
             sections.extend((f"{index}. {item}", ""))
     if not windows:
         sections.extend(("macOS 如果提示 brew: command not found，请先访问 https://brew.sh 安装 Homebrew。", ""))
+    sections.extend(("中国大陆或受限网络：先启动符合所在地法律和组织规定的代理工具，再在“首次配置向导”中填写本机 HTTP 代理并测试。", ""))
     sections.append("完成后关闭并重新打开本工具，再点击“刷新检查”。")
     return "\n".join(sections).strip() + "\n"
 
 
-def collect_diagnostics(codex_home: Path, vault: Path | None = None) -> Dict[str, Any]:
+def collect_diagnostics(codex_home: Path, vault: Path | None = None, proxy_url: str = "") -> Dict[str, Any]:
     processes = running_codex_processes(os.getpid())
     sessions = sum(1 for _ in iter_session_files(codex_home)) if codex_home.exists() else 0
     databases = find_state_databases(codex_home) if codex_home.exists() else []
-    gh_status = github_auth_status()
+    gh_status = github_auth_status(proxy_url)
     result: Dict[str, Any] = {
         "platform": platform_description(),
         "codex_home": str(codex_home),
@@ -108,10 +111,10 @@ def collect_diagnostics(codex_home: Path, vault: Path | None = None) -> Dict[str
         result["vault"] = str(vault)
         result["vault_exists"] = vault.exists()
         if (vault / ".git").exists():
-            status = run(["git", "status", "--short", "--branch"], vault)
+            status = run(["git", "status", "--short", "--branch"], vault, proxy_url=proxy_url)
             result["vault_git_status"] = status.output
     return result
 
 
-def diagnostics_json(codex_home: Path, vault: Path | None = None) -> str:
-    return json.dumps(collect_diagnostics(codex_home, vault), ensure_ascii=False, indent=2)
+def diagnostics_json(codex_home: Path, vault: Path | None = None, proxy_url: str = "") -> str:
+    return json.dumps(collect_diagnostics(codex_home, vault, proxy_url), ensure_ascii=False, indent=2)

@@ -76,15 +76,26 @@ def is_transient_push_failure(output: str) -> bool:
     return any(marker in lowered for marker in TRANSIENT_PUSH_MARKERS)
 
 
+def is_missing_upstream(output: str) -> bool:
+    lowered = output.lower()
+    return "has no upstream branch" in lowered or "set the remote as upstream" in lowered
+
+
 def command_environment(
     environ: Mapping[str, str] | None = None,
     platform_name: str | None = None,
+    proxy_url: str = "",
 ) -> dict[str, str]:
     env = dict(os.environ if environ is None else environ)
     entries = [item for item in env.get("PATH", "").split(os.pathsep) if item]
     if (platform_name or sys.platform) == "darwin":
         entries = [*MACOS_COMMAND_PATHS, *entries]
     env["PATH"] = os.pathsep.join(dict.fromkeys(entries))
+    if proxy_url:
+        env["HTTP_PROXY"] = proxy_url
+        env["HTTPS_PROXY"] = proxy_url
+        env["http_proxy"] = proxy_url
+        env["https_proxy"] = proxy_url
     return env
 
 
@@ -93,11 +104,11 @@ def command_available(name: str) -> bool:
     return shutil.which(name, path=env.get("PATH")) is not None
 
 
-def run(command: Sequence[str], cwd: Path | None = None, timeout: int = 120) -> CommandResult:
+def run(command: Sequence[str], cwd: Path | None = None, timeout: int = 120, proxy_url: str = "") -> CommandResult:
     try:
         result = subprocess.run(
             list(command), cwd=str(cwd) if cwd else None, capture_output=True,
-            text=True, timeout=timeout, check=False, env=command_environment(),
+            text=True, timeout=timeout, check=False, env=command_environment(proxy_url=proxy_url),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return CommandResult(False, str(exc), 1)
@@ -112,54 +123,60 @@ def run(command: Sequence[str], cwd: Path | None = None, timeout: int = 120) -> 
     return CommandResult(result.returncode == 0, output, result.returncode)
 
 
-def github_auth_status() -> CommandResult:
+def github_auth_status(proxy_url: str = "") -> CommandResult:
     if not command_available("gh"):
         return CommandResult(False, "GitHub CLI (gh) is not installed", 127)
-    return run(["gh", "auth", "status"], timeout=20)
+    return run(["gh", "auth", "status"], timeout=20, proxy_url=proxy_url)
 
 
 class VaultGit:
-    def __init__(self, path: Path, remote: str = ""):
+    def __init__(self, path: Path, remote: str = "", proxy_url: str = ""):
         self.path = path
         self.remote = remote
+        self.proxy_url = proxy_url
 
     def prepare(self) -> CommandResult:
         if (self.path / ".git").exists():
             return CommandResult(True, "Repository is ready", 0)
         if self.remote:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            return run(["git", "clone", self.remote, str(self.path)], timeout=300)
+            return run(["git", "clone", self.remote, str(self.path)], timeout=300, proxy_url=self.proxy_url)
         self.path.mkdir(parents=True, exist_ok=True)
-        result = run(["git", "init", "-b", "main"], self.path)
+        result = run(["git", "init", "-b", "main"], self.path, proxy_url=self.proxy_url)
         if result.ok:
             (self.path / "sessions-text" / "devices").mkdir(parents=True, exist_ok=True)
         return result
 
     def pull(self) -> CommandResult:
-        return run(["git", "pull", "--rebase", "--autostash"], self.path, timeout=300)
+        result = run(["git", "pull", "--rebase", "--autostash"], self.path, timeout=300, proxy_url=self.proxy_url)
+        if not result.ok and "no such ref was fetched" in result.output.lower():
+            return CommandResult(True, "Remote repository is empty", 0)
+        return result
 
     def status(self) -> CommandResult:
-        return run(["git", "status", "--short", "--branch"], self.path)
+        return run(["git", "status", "--short", "--branch"], self.path, proxy_url=self.proxy_url)
 
     def commit_and_push(self, message: str) -> CommandResult:
-        add = run(["git", "add", "--all"], self.path)
+        add = run(["git", "add", "--all"], self.path, proxy_url=self.proxy_url)
         if not add.ok:
             return add
-        staged = run(["git", "diff", "--cached", "--quiet"], self.path)
+        staged = run(["git", "diff", "--cached", "--quiet"], self.path, proxy_url=self.proxy_url)
         if staged.returncode not in (0, 1):
             return staged
         if staged.returncode == 1:
-            commit = run(["git", "commit", "-m", message], self.path)
+            commit = run(["git", "commit", "-m", message], self.path, proxy_url=self.proxy_url)
             if not commit.ok:
                 return commit
 
         # Always push: a previous network failure may have left a clean working
         # tree with one or more local commits still ahead of the remote.
-        push = run(["git", "push"], self.path, timeout=600)
+        push = run(["git", "push"], self.path, timeout=600, proxy_url=self.proxy_url)
+        if not push.ok and is_missing_upstream(push.output):
+            push = run(["git", "push", "--set-upstream", "origin", "HEAD"], self.path, timeout=600, proxy_url=self.proxy_url)
         if push.ok or not is_transient_push_failure(push.output):
             return push
 
-        retry = run(["git", "-c", "http.version=HTTP/1.1", "push"], self.path, timeout=600)
+        retry = run(["git", "-c", "http.version=HTTP/1.1", "push"], self.path, timeout=600, proxy_url=self.proxy_url)
         if retry.ok:
             return retry
         combined = "\n".join(part for part in (push.output, "HTTP/1.1 retry:", retry.output) if part)

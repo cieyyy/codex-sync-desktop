@@ -29,8 +29,10 @@ from .core.config import SettingsStore, device_slug
 from .core.diagnostics import collect_diagnostics, diagnostics_json, remediation_text
 from .core.git_client import VaultGit, compact_failure_reason, summarize_pull
 from .core.index_repair import repair_indexes
+from .core.onboarding import validate_proxy_url
 from .core.processes import running_codex_processes
 from .core.sessions import apply_import, export_sanitized_sessions, list_source_devices, plan_import
+from .wizard import OnboardingWizard
 
 
 class QueueLogHandler(logging.Handler):
@@ -63,6 +65,7 @@ class CodexSyncApp(tk.Tk):
         self._build_ui()
         self.after(120, self._poll_messages)
         self.after(250, self.refresh_all)
+        self.after(700, self.maybe_show_onboarding)
 
     def report_callback_exception(self, exc_type: type[BaseException], exc: BaseException, trace: Any) -> None:
         self.logger.error("界面操作失败：%s", exc, exc_info=(exc_type, exc, trace))
@@ -185,6 +188,7 @@ class CodexSyncApp(tk.Tk):
         self._task_button(toolbar, "刷新检查", self.refresh_all, "Accent.TButton").pack(side="left")
         ttk.Button(toolbar, text="打开 Codex 目录", command=lambda: self._open_path(self.settings.codex_path)).pack(side="left", padx=6)
         ttk.Button(toolbar, text="查看解决办法", command=self.show_remediation).pack(side="left")
+        ttk.Button(toolbar, text="首次配置向导", command=self.open_onboarding).pack(side="left", padx=6)
         self.overview_tree = self._tree(self.overview_tab, ("item", "status", "detail"), (180, 120, 590))
 
     def _build_sync(self) -> None:
@@ -203,8 +207,9 @@ class CodexSyncApp(tk.Tk):
         source_panel.columnconfigure(0, weight=1)
         actions = ttk.Frame(self.sync_tab)
         actions.pack(fill="x", pady=(0, 12))
-        self._task_button(actions, "拉取仓库", self.pull_vault).pack(side="left")
-        self._task_button(actions, "导出并推送", self.export_and_push, "Accent.TButton").pack(side="left", padx=6)
+        self._task_button(actions, "一键同步", self.sync_once, "Accent.TButton").pack(side="left")
+        self._task_button(actions, "拉取仓库", self.pull_vault).pack(side="left", padx=6)
+        self._task_button(actions, "导出并推送", self.export_and_push).pack(side="left", padx=6)
         self._task_button(actions, "预览导入", self.preview_import).pack(side="left", padx=(12, 6))
         self._task_button(actions, "导入并修复", self.import_and_repair).pack(side="left")
         self.import_tree = self._tree(self.sync_tab, ("action", "count", "meaning"), (180, 100, 610))
@@ -230,9 +235,10 @@ class CodexSyncApp(tk.Tk):
             "vault_path": tk.StringVar(value=self.settings.vault_path),
             "vault_remote": tk.StringVar(value=self.settings.vault_remote),
             "device_name": tk.StringVar(value=self.settings.device_name),
+            "proxy_url": tk.StringVar(value=self.settings.proxy_url),
         }
         ttk.Label(panel, text="同步设置", style="PanelSection.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        labels = (("codex_home", "Codex 数据目录"), ("vault_path", "本地同步仓库"), ("vault_remote", "GitHub 仓库地址"), ("device_name", "设备名称"))
+        labels = (("codex_home", "Codex 数据目录"), ("vault_path", "本地同步仓库"), ("vault_remote", "GitHub 仓库地址"), ("device_name", "设备名称"), ("proxy_url", "HTTP 代理（可选）"))
         for row, (key, label) in enumerate(labels):
             grid_row = row + 1
             ttk.Label(panel, text=label, style="Panel.TLabel", width=16).grid(row=grid_row, column=0, sticky="w", pady=5)
@@ -241,7 +247,7 @@ class CodexSyncApp(tk.Tk):
                 ttk.Button(panel, text="选择", command=lambda k=key: self.choose_directory(k)).grid(row=grid_row, column=2, padx=(8, 0))
         panel.columnconfigure(1, weight=1)
         buttons = ttk.Frame(panel, style="Panel.TFrame")
-        buttons.grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        buttons.grid(row=len(labels) + 1, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self._task_button(buttons, "保存设置", self.save_settings, "Accent.TButton").pack(side="left")
         self._task_button(buttons, "初始化/克隆仓库", self.prepare_vault).pack(side="left", padx=6)
         logs_header = ttk.Frame(self.maintenance_tab)
@@ -271,7 +277,7 @@ class CodexSyncApp(tk.Tk):
         self.overview_tree.insert("", "end", values=("环境检查", "检查中", "正在读取 Codex 和 Git 环境"))
         self._run_task(
             "刷新检查",
-            lambda: collect_diagnostics(self.settings.codex_path, self.settings.vault),
+            lambda: collect_diagnostics(self.settings.codex_path, self.settings.vault, self.settings.proxy_url),
             self._show_overview,
             callback_with_result=True,
         )
@@ -395,12 +401,19 @@ class CodexSyncApp(tk.Tk):
         self.backup_summary.configure(text=f"备份 {len(records)} 份，共 {self._format_bytes(total)}" if records else "当前无备份")
 
     def save_settings(self) -> None:
-        self._save_settings_values()
+        try:
+            self._save_settings_values()
+        except ValueError as exc:
+            messagebox.showerror("设置错误", str(exc))
+            return
         self.refresh_all()
 
     def _save_settings_values(self) -> None:
         for key, variable in self.setting_vars.items():
             setattr(self.settings, key, variable.get().strip())
+        self.settings.proxy_url = validate_proxy_url(self.settings.proxy_url)
+        if self.settings.vault_path:
+            self.settings.onboarding_complete = True
         self.store.save(self.settings)
         self.logger.info("设置已保存")
 
@@ -410,18 +423,22 @@ class CodexSyncApp(tk.Tk):
             self.setting_vars[key].set(selected)
 
     def prepare_vault(self) -> None:
-        self._save_settings_values()
+        try:
+            self._save_settings_values()
+        except ValueError as exc:
+            messagebox.showerror("设置错误", str(exc))
+            return
         vault = self.settings.vault
         if not vault:
             messagebox.showwarning("未配置仓库", "请先选择本地同步仓库。")
             return
-        self._run_task("初始化仓库", lambda: VaultGit(vault, self.settings.vault_remote).prepare(), self.refresh_all)
+        self._run_task("初始化仓库", lambda: VaultGit(vault, self.settings.vault_remote, self.settings.proxy_url).prepare(), self.refresh_all)
 
     def pull_vault(self) -> None:
         vault = self._require_vault()
         if vault:
             def work() -> str:
-                result = VaultGit(vault).pull()
+                result = VaultGit(vault, proxy_url=self.settings.proxy_url).pull()
                 if result.output:
                     self.logger.info("Git pull 完整输出：\n%s", result.output)
                 self._checked_git(result)
@@ -436,10 +453,63 @@ class CodexSyncApp(tk.Tk):
             report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
             self.logger.info("已导出 %s 个活动文字会话，移除 %s 个不再同步的旧副本和 %s 个媒体或二进制块", report.sessions, report.removed_files, report.media_removed)
             if self.settings.auto_push_after_export:
-                result = VaultGit(vault).commit_and_push(f"sync: update {device_slug(self.settings.device_name)}")
+                result = VaultGit(vault, proxy_url=self.settings.proxy_url).commit_and_push(f"sync: update {device_slug(self.settings.device_name)}")
                 self._checked_git(result)
             return f"结果：成功\n活动会话：{report.sessions}\n停止同步：{report.removed_files}\n失败：0"
         self._run_task("导出并推送", work, self.refresh_sources)
+
+    def sync_once(self) -> None:
+        vault = self._require_vault()
+        if not vault:
+            return
+        source = self.source_device.get().strip()
+        local_device = device_slug(self.settings.device_name)
+        should_import = bool(source and source != local_device)
+        if should_import:
+            processes = running_codex_processes(os.getpid())
+            if processes:
+                names = ", ".join(f"{item.name} (PID {item.pid})" for item in processes)
+                messagebox.showerror("需要退出相关程序", f"一键同步包含导入和索引修复，请先退出 Codex、ChatGPT 和 Codex++。\n\n检测到：{names}")
+                return
+        description = "拉取仓库并上传本机活动会话"
+        if should_import:
+            description = f"拉取仓库、导入来源设备 {source}、修复侧栏，再上传本机活动会话"
+        if not messagebox.askyesno("确认一键同步", description + "。是否继续？"):
+            return
+
+        def work() -> str:
+            git = VaultGit(vault, proxy_url=self.settings.proxy_url)
+            self._checked_git(git.pull())
+            copied = merged = titles = 0
+            if should_import:
+                plan = plan_import(self.settings.codex_path, vault, source)
+                has_changes = any(item.action in ("copy", "conflict") for item in plan.items) or bool(plan.title_updates)
+                if has_changes:
+                    transaction = create_import_transaction(self.settings.codex_path, plan)
+                    try:
+                        result = apply_import(plan)
+                        repair_indexes(self.settings.codex_path, {}, create_backup=False, preferred_titles=plan.title_updates)
+                        finish_import_transaction(transaction, result["counts"])
+                        prune_backup_history(self.settings.codex_path, keep=1)
+                    except Exception:
+                        finish_import_transaction(transaction, plan.counts, status="failed")
+                        raise
+                    copied = len(result["copied"])
+                    merged = len(result["merged"])
+                    titles = len(plan.title_updates)
+            report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
+            self._checked_git(git.commit_and_push(f"sync: one-click update {local_device}"))
+            return (
+                "结果：成功\n"
+                f"导入新增：{copied}\n"
+                f"自动合并：{merged}\n"
+                f"标题更新：{titles}\n"
+                f"上传活动会话：{report.sessions}\n"
+                f"停止同步：{report.removed_files}\n"
+                "失败：0"
+            )
+
+        self._run_task("一键同步", work, self.refresh_all)
 
     def preview_import(self) -> None:
         vault = self._require_vault()
@@ -449,7 +519,7 @@ class CodexSyncApp(tk.Tk):
             return
         def work() -> Any:
             if self.settings.auto_pull_before_import:
-                self._checked_git(VaultGit(vault).pull())
+                self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
             return plan_import(self.settings.codex_path, vault, source)
         self._run_task("预览导入", work, self._show_import_plan, callback_with_result=True)
 
@@ -468,7 +538,7 @@ class CodexSyncApp(tk.Tk):
             return
         def work() -> str:
             if self.settings.auto_pull_before_import:
-                self._checked_git(VaultGit(vault).pull())
+                self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
             plan = plan_import(self.settings.codex_path, vault, source)
             transaction = create_import_transaction(self.settings.codex_path, plan)
             try:
@@ -624,6 +694,18 @@ class CodexSyncApp(tk.Tk):
         self.log_text.delete("1.0", "end")
         self.busy_label.configure(text="日志已清理")
 
+    def maybe_show_onboarding(self) -> None:
+        if not self.settings.onboarding_complete and not self.settings.vault:
+            self.open_onboarding()
+
+    def open_onboarding(self) -> None:
+        existing = next((window for window in self.winfo_children() if isinstance(window, OnboardingWizard)), None)
+        if existing:
+            existing.lift()
+            existing.focus_force()
+            return
+        OnboardingWizard(self)
+
     @staticmethod
     def _format_bytes(value: int) -> str:
         size = float(value)
@@ -652,6 +734,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex-home", type=Path, help="override Codex data directory for diagnostics")
     parser.add_argument("--vault", type=Path, help="override sync vault for diagnostics")
     parser.add_argument("--smoke-ui", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-onboarding", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -660,10 +743,10 @@ def main() -> None:
     store = SettingsStore()
     settings = store.load()
     if args.diagnose:
-        print(diagnostics_json(args.codex_home or settings.codex_path, args.vault or settings.vault))
+        print(diagnostics_json(args.codex_home or settings.codex_path, args.vault or settings.vault, settings.proxy_url))
         return
     if sys.platform == "darwin" and not getattr(sys, "frozen", False) and tk.TkVersion < 8.6:
-        if args.smoke_ui:
+        if args.smoke_ui or args.smoke_onboarding:
             interpreter = tk.Tcl()
             print(f"ui-import-smoke-ok (Tk {interpreter.eval('info patchlevel')}; window skipped because Tk 8.6+ is required)")
             return
@@ -672,6 +755,13 @@ def main() -> None:
             "Use the packaged macOS app, or run the source with Python 3.11+ and Tk 8.6+."
         )
     app = CodexSyncApp(store)
+    if args.smoke_onboarding:
+        app.withdraw()
+        wizard = OnboardingWizard(app)
+        wizard.update_idletasks()
+        wizard.destroy()
+        app.destroy()
+        return
     if args.smoke_ui:
         app.withdraw()
         app.update_idletasks()
