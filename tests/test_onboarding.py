@@ -10,6 +10,7 @@ from codex_sync_desktop.core.git_client import CommandResult
 from codex_sync_desktop.core.onboarding import (
     clear_tool_installer_cache,
     create_private_repository,
+    detect_system_proxy,
     github_setup_status,
     launch_dependency_install,
     select_macos_gh_installer_asset,
@@ -17,6 +18,8 @@ from codex_sync_desktop.core.onboarding import (
     select_windows_git_installer_asset,
     validate_proxy_url,
     write_windows_tool_install_script,
+    _macos_proxy_candidates,
+    _url_handlers,
 )
 
 
@@ -29,6 +32,32 @@ class ProxyValidationTests(TestCase):
             validate_proxy_url("http://name:secret@127.0.0.1:7890")
         with self.assertRaises(ValueError):
             validate_proxy_url("socks5://127.0.0.1:7890")
+
+    @patch("codex_sync_desktop.core.onboarding._local_proxy_port_open", return_value=False)
+    @patch("codex_sync_desktop.core.onboarding.urllib.request.getproxies", return_value={})
+    @patch("codex_sync_desktop.core.onboarding._windows_proxy_candidates", return_value=["http=127.0.0.1:7890;https=127.0.0.1:7897"])
+    @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
+    def test_windows_system_proxy_mapping_prefers_https(self, _windows, _proxies, _ports):
+        self.assertEqual(detect_system_proxy(), "http://127.0.0.1:7897")
+
+    @patch("codex_sync_desktop.core.onboarding.subprocess.run")
+    def test_macos_reads_enabled_scutil_https_proxy(self, mocked_run):
+        mocked_run.return_value = type("Result", (), {
+            "returncode": 0,
+            "stdout": "HTTPSProxy : 127.0.0.1\nHTTPSPort : 7897\nHTTPSEnable : 1\n",
+        })()
+
+        self.assertEqual(_macos_proxy_candidates(), ["http://127.0.0.1:7897"])
+
+    @patch("codex_sync_desktop.core.onboarding.ssl.create_default_context")
+    @patch("codex_sync_desktop.core.onboarding._trusted_ca_file", return_value="trusted-ca.pem")
+    def test_https_handler_uses_bundled_ca_file(self, _where, mocked_context):
+        mocked_context.return_value = object()
+
+        handlers = _url_handlers("http://127.0.0.1:7897")
+
+        mocked_context.assert_called_once_with(cafile="trusted-ca.pem")
+        self.assertEqual(len(handlers), 2)
 
 
 class PrivateRepositorySetupTests(TestCase):

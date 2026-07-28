@@ -68,6 +68,8 @@ python3 -m unittest discover -v
 
 Windows 会同时检查当前 `PATH`、常用安装目录和注册表，因此 Git 安装在 `D:\Git` 等自定义目录时也可以被识别。自动修复只安装实际缺失的工具，不会重复安装已经可用的 Git 或 GitHub CLI。
 
+代理检测会读取 Windows WinINet 注册表和 macOS `scutil --proxy`；Clash TUN 未写入系统代理时，还会探测常见本机 HTTP 端口。发布包内置可信 CA 证书，HTTPS 检测不会通过关闭证书校验来绕过错误。
+
 应用自身可以保持运行；它会阻止在其他相关程序仍占用数据库时执行修复或回滚。
 
 ## 构建产物

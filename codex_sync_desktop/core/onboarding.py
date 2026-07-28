@@ -6,6 +6,8 @@ import os
 import re
 import shlex
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -25,6 +27,7 @@ GH_DOWNLOAD_URL = "https://cli.github.com/"
 GH_LATEST_RELEASE_API = "https://api.github.com/repos/cli/cli/releases/latest"
 GIT_WINDOWS_LATEST_RELEASE_API = "https://api.github.com/repos/git-for-windows/git/releases/latest"
 MAX_TOOL_DOWNLOAD_BYTES = 200 * 1024 * 1024
+COMMON_LOCAL_PROXY_PORTS = (7890, 7897, 7891, 10809, 1080)
 
 
 @dataclass
@@ -62,20 +65,26 @@ def validate_proxy_url(value: str) -> str:
 
 
 def detect_system_proxy() -> str:
+    candidates = []
+    if sys.platform == "win32":
+        candidates.extend(_windows_proxy_candidates())
+    elif sys.platform == "darwin":
+        candidates.extend(_macos_proxy_candidates())
     proxies = urllib.request.getproxies()
-    for key in ("https", "http"):
-        value = str(proxies.get(key) or "").strip()
-        if value:
-            try:
-                return validate_proxy_url(value)
-            except ValueError:
-                continue
+    candidates.extend(str(proxies.get(key) or "").strip() for key in ("https", "http"))
+    for value in candidates:
+        normalized = _normalize_proxy_candidate(value)
+        if normalized:
+            return normalized
+    for port in COMMON_LOCAL_PROXY_PORTS:
+        if _local_proxy_port_open(port):
+            return f"http://127.0.0.1:{port}"
     return ""
 
 
 def check_github_connectivity(proxy_url: str = "", timeout: int = 12) -> ConnectivityResult:
     proxy = validate_proxy_url(proxy_url)
-    handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else [urllib.request.ProxyHandler({})]
+    handlers = _url_handlers(proxy)
     opener = urllib.request.build_opener(*handlers)
     request = urllib.request.Request(
         "https://api.github.com/meta",
@@ -86,8 +95,91 @@ def check_github_connectivity(proxy_url: str = "", timeout: int = 12) -> Connect
             status = int(getattr(response, "status", 200))
         return ConnectivityResult(200 <= status < 400, status, proxy_used=bool(proxy))
     except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-        reason = getattr(exc, "reason", None) or str(exc)
-        return ConnectivityResult(False, reason=str(reason), proxy_used=bool(proxy))
+        reason = str(getattr(exc, "reason", None) or str(exc))
+        if "CERTIFICATE_VERIFY_FAILED" in reason:
+            reason = "TLS 证书校验失败：代理返回的证书不受内置可信 CA 认可；请检查代理 HTTPS/证书设置，不要关闭证书校验"
+        return ConnectivityResult(False, reason=reason, proxy_used=bool(proxy))
+
+
+def _url_handlers(proxy: str) -> list[urllib.request.BaseHandler]:
+    proxy_handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy}) if proxy else urllib.request.ProxyHandler({})
+    ca_file = _trusted_ca_file()
+    tls_context = ssl.create_default_context(cafile=ca_file) if ca_file else ssl.create_default_context()
+    return [proxy_handler, urllib.request.HTTPSHandler(context=tls_context)]
+
+
+def _trusted_ca_file() -> str:
+    try:
+        import certifi
+    except ImportError:
+        return ""
+    return certifi.where()
+
+
+def _normalize_proxy_candidate(value: str) -> str:
+    raw = str(value or "").strip().strip('"')
+    if not raw:
+        return ""
+    if ";" in raw or "=" in raw:
+        parts = {}
+        for item in raw.split(";"):
+            if "=" in item:
+                key, candidate = item.split("=", 1)
+                parts[key.strip().lower()] = candidate.strip()
+        raw = parts.get("https") or parts.get("http") or ""
+    if raw and "://" not in raw:
+        raw = "http://" + raw
+    try:
+        return validate_proxy_url(raw)
+    except ValueError:
+        return ""
+
+
+def _windows_proxy_candidates() -> list[str]:
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as key:
+            enabled = int(winreg.QueryValueEx(key, "ProxyEnable")[0] or 0)
+            server = str(winreg.QueryValueEx(key, "ProxyServer")[0] or "")
+        return [server] if enabled and server else []
+    except (ImportError, OSError, TypeError, ValueError):
+        return []
+
+
+def _macos_proxy_candidates() -> list[str]:
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/scutil", "--proxy"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    values = {
+        key: value.strip()
+        for key, value in re.findall(r"(?m)^\s*([A-Za-z]+)\s*:\s*(.+?)\s*$", result.stdout or "")
+    }
+    candidates = []
+    for prefix in ("HTTPS", "HTTP"):
+        if values.get(prefix + "Enable") != "1":
+            continue
+        host = values.get(prefix + "Proxy", "")
+        port = values.get(prefix + "Port", "")
+        if host and port:
+            candidates.append(f"http://{host}:{port}")
+    return candidates
+
+
+def _local_proxy_port_open(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.08):
+            return True
+    except OSError:
+        return False
 
 
 def github_setup_status(proxy_url: str = "") -> dict[str, object]:
@@ -285,7 +377,7 @@ def download_verified_release_asset(
     proxy_url: str = "",
 ) -> Path:
     proxy = validate_proxy_url(proxy_url)
-    handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else [urllib.request.ProxyHandler({})]
+    handlers = _url_handlers(proxy)
     opener = urllib.request.build_opener(*handlers)
     headers = {"User-Agent": "Codex-Sync-Desktop", "Accept": "application/vnd.github+json"}
     request = urllib.request.Request(release_api, headers=headers)
