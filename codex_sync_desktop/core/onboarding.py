@@ -154,6 +154,7 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Dependency
     if sys.platform == "win32":
         winget = shutil.which("winget", path=command_environment().get("PATH"))
         winget_failures: list[str] = []
+        latest_status = {"git": git_probe.ok, "gh": gh_probe.ok}
         if winget:
             packages = []
             if not git_probe.ok:
@@ -169,14 +170,23 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Dependency
                 if not install.ok:
                     winget_failures.append(f"{label}: {_probe_reason(install, 'winget 安装失败')}")
             verified = github_setup_status(proxy)
+            latest_status = verified
             if verified.get("git") and verified.get("gh"):
                 clear_tool_installer_cache(app_home)
                 return DependencyInstallResult(True, "Git 和 GitHub CLI 已自动安装完成，可以继续登录。")
-        git_installer, gh_installer = download_latest_windows_tool_installers(app_home, proxy)
+        need_git = not bool(latest_status.get("git"))
+        need_gh = not bool(latest_status.get("gh"))
+        git_installer, gh_installer = download_latest_windows_tool_installers(
+            app_home,
+            proxy,
+            include_git=need_git,
+            include_gh=need_gh,
+        )
         script = write_windows_tool_install_script(app_home, git_installer, gh_installer, proxy)
         subprocess.Popen(["powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", str(script)])
         fallback_note = "；winget 未成功，已切换官方安装包" if winget_failures else ""
-        return DependencyInstallResult(False, f"Git 和 GitHub CLI 官方安装程序已打开{fallback_note}。按系统提示授权，软件会自动检测安装结果。")
+        tool_names = " 和 ".join(name for name, needed in (("Git", need_git), ("GitHub CLI", need_gh)) if needed)
+        return DependencyInstallResult(False, f"{tool_names} 官方安装程序已打开{fallback_note}。按系统提示授权，软件会自动检测安装结果。")
     if sys.platform == "darwin":
         actions = []
         if not git_probe.ok:
@@ -190,44 +200,72 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Dependency
     raise RuntimeError("当前系统暂不支持自动安装，请使用官方下载入口")
 
 
-def download_latest_windows_tool_installers(app_home: Path, proxy_url: str = "") -> tuple[Path, Path]:
-    git_installer = download_verified_release_asset(
-        GIT_WINDOWS_LATEST_RELEASE_API,
-        select_windows_git_installer_asset,
-        app_home / "downloads" / "Git-for-Windows-64-bit.exe",
-        proxy_url,
-    )
-    gh_installer = download_verified_release_asset(
-        GH_LATEST_RELEASE_API,
-        select_windows_gh_installer_asset,
-        app_home / "downloads" / "GitHub-CLI-windows-amd64.msi",
-        proxy_url,
-    )
+def download_latest_windows_tool_installers(
+    app_home: Path,
+    proxy_url: str = "",
+    *,
+    include_git: bool = True,
+    include_gh: bool = True,
+) -> tuple[Path | None, Path | None]:
+    git_installer = None
+    gh_installer = None
+    if include_git:
+        git_installer = download_verified_release_asset(
+            GIT_WINDOWS_LATEST_RELEASE_API,
+            select_windows_git_installer_asset,
+            app_home / "downloads" / "Git-for-Windows-64-bit.exe",
+            proxy_url,
+        )
+    if include_gh:
+        gh_installer = download_verified_release_asset(
+            GH_LATEST_RELEASE_API,
+            select_windows_gh_installer_asset,
+            app_home / "downloads" / "GitHub-CLI-windows-amd64.msi",
+            proxy_url,
+        )
     return git_installer, gh_installer
 
 
-def write_windows_tool_install_script(app_home: Path, git_installer: Path, gh_installer: Path, proxy_url: str = "") -> Path:
+def write_windows_tool_install_script(
+    app_home: Path,
+    git_installer: Path | None,
+    gh_installer: Path | None,
+    proxy_url: str = "",
+) -> Path:
+    if git_installer is None and gh_installer is None:
+        raise ValueError("没有需要安装的工具")
     proxy = validate_proxy_url(proxy_url)
     script = app_home / "install-sync-tools.ps1"
-    escaped_git = str(git_installer).replace("'", "''")
-    escaped_gh = str(gh_installer).replace("'", "''")
     proxy_lines = ""
     if proxy:
         escaped_proxy = proxy.replace("'", "''")
         proxy_lines = f"$env:HTTP_PROXY='{escaped_proxy}'\n$env:HTTPS_PROXY='{escaped_proxy}'\n"
-    script.write_text(
-        "$ErrorActionPreference='Stop'\n"
-        f"{proxy_lines}"
-        f"$git=Start-Process -FilePath '{escaped_git}' -ArgumentList @('/VERYSILENT','/NORESTART','/NOCANCEL','/SP-') -Wait -PassThru\n"
-        "if ($git.ExitCode -ne 0) { throw \"Git 安装失败，退出码 $($git.ExitCode)\" }\n"
-        f"$gh=Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i','{escaped_gh}','/passive','/norestart') -Wait -PassThru\n"
-        "if ($gh.ExitCode -ne 0) { throw \"GitHub CLI 安装失败，退出码 $($gh.ExitCode)\" }\n"
-        f"Remove-Item -LiteralPath '{escaped_git}' -Force -ErrorAction SilentlyContinue\n"
-        f"Remove-Item -LiteralPath '{escaped_gh}' -Force -ErrorAction SilentlyContinue\n"
-        "Write-Host '必要工具安装完成。Codex Sync Desktop 会自动检测结果。' -ForegroundColor Green\n"
-        "Read-Host '按回车关闭窗口'\n",
-        encoding="utf-8-sig",
+    lines = ["$ErrorActionPreference='Stop'", proxy_lines.rstrip()]
+    if git_installer is not None:
+        escaped_git = str(git_installer).replace("'", "''")
+        lines.extend(
+            (
+                f"$git=Start-Process -FilePath '{escaped_git}' -ArgumentList @('/VERYSILENT','/NORESTART','/NOCANCEL','/SP-') -Wait -PassThru",
+                'if ($git.ExitCode -ne 0) { throw "Git 安装失败，退出码 $($git.ExitCode)" }',
+                f"Remove-Item -LiteralPath '{escaped_git}' -Force -ErrorAction SilentlyContinue",
+            )
+        )
+    if gh_installer is not None:
+        escaped_gh = str(gh_installer).replace("'", "''")
+        lines.extend(
+            (
+                f"$gh=Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i','{escaped_gh}','/passive','/norestart') -Wait -PassThru",
+                'if ($gh.ExitCode -ne 0) { throw "GitHub CLI 安装失败，退出码 $($gh.ExitCode)" }',
+                f"Remove-Item -LiteralPath '{escaped_gh}' -Force -ErrorAction SilentlyContinue",
+            )
+        )
+    lines.extend(
+        (
+            "Write-Host '必要工具安装完成。Codex Sync Desktop 会自动检测结果。' -ForegroundColor Green",
+            "Read-Host '按回车关闭窗口'",
+        )
     )
+    script.write_text("\n".join(line for line in lines if line) + "\n", encoding="utf-8-sig")
     return script
 
 
@@ -440,4 +478,7 @@ def _require_ok(result: CommandResult, label: str) -> None:
 
 def _probe_reason(result: CommandResult, fallback: str) -> str:
     detail = result.output.strip().splitlines()[-1] if result.output.strip() else fallback
+    lowered = detail.lower()
+    if "winerror 2" in lowered or "system cannot find the file" in lowered or "系统找不到指定的文件" in detail:
+        detail = f"{fallback}；未在 PATH、常用安装目录或 Windows 注册表中找到"
     return detail if len(detail) <= 160 else detail[:157] + "..."

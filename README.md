@@ -66,6 +66,8 @@ python3 -m unittest discover -v
 
 面向完全没有 Git/GitHub CLI 的用户，向导会自动安装；Windows 的 winget 不可用或失败时改用经过校验的官方安装包，macOS 使用系统命令行工具安装器和经过校验的 GitHub CLI 官方安装包。系统授权完成后软件自动复检，不需要执行命令。详见 [小白首次配置手册](docs/FIRST_RUN_GUIDE.md)。
 
+Windows 会同时检查当前 `PATH`、常用安装目录和注册表，因此 Git 安装在 `D:\Git` 等自定义目录时也可以被识别。自动修复只安装实际缺失的工具，不会重复安装已经可用的 Git 或 GitHub CLI。
+
 应用自身可以保持运行；它会阻止在其他相关程序仍占用数据库时执行修复或回滚。
 
 ## 构建产物

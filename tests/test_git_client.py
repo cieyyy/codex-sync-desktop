@@ -14,6 +14,7 @@ from codex_sync_desktop.core.git_client import (
     is_transient_push_failure,
     run,
     summarize_pull,
+    windows_registry_command_paths,
 )
 
 
@@ -50,6 +51,47 @@ class GitClientEnvironmentTests(unittest.TestCase):
         self.assertIn(r"C:\Program Files\Git\cmd", entries)
         self.assertIn(r"C:\Program Files\GitHub CLI", entries)
         self.assertIn(r"C:\Users\Buyer\AppData\Local\Microsoft\WinGet\Links", entries)
+
+    @patch("codex_sync_desktop.core.git_client.sys.platform", "win32")
+    def test_windows_registry_detects_custom_git_install_directory(self):
+        values = {
+            (2, r"SOFTWARE\GitForWindows", "InstallPath"): r"D:\Git",
+        }
+
+        class FakeKey:
+            def __init__(self, root, path):
+                self.root = root
+                self.path = path
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def open_key(root, path, _reserved, _access):
+            return FakeKey(root, path)
+
+        def query_value(key, name):
+            lookup = (key.root, key.path, name)
+            if lookup not in values:
+                raise FileNotFoundError(lookup)
+            return values[lookup], 1
+
+        fake_winreg = SimpleNamespace(
+            HKEY_CURRENT_USER=1,
+            HKEY_LOCAL_MACHINE=2,
+            KEY_READ=1,
+            KEY_WOW64_64KEY=256,
+            KEY_WOW64_32KEY=512,
+            OpenKey=open_key,
+            QueryValueEx=query_value,
+        )
+        with patch.dict("sys.modules", {"winreg": fake_winreg}):
+            paths = windows_registry_command_paths()
+
+        self.assertIn(r"D:\Git\cmd", paths)
+        self.assertIn(r"D:\Git\bin", paths)
 
     def test_proxy_is_applied_to_git_and_github_cli_environment(self):
         env = command_environment({"PATH": "/usr/bin"}, platform_name="linux", proxy_url="http://127.0.0.1:7890")

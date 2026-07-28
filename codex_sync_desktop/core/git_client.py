@@ -34,6 +34,51 @@ def windows_command_paths(environ: Mapping[str, str]) -> tuple[str, ...]:
         )
     return tuple(candidates)
 
+
+def windows_registry_command_paths() -> tuple[str, ...]:
+    if sys.platform != "win32":
+        return ()
+    try:
+        import winreg
+    except ImportError:
+        return ()
+
+    candidates: list[str] = []
+    roots = (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE)
+    views = tuple(dict.fromkeys((
+        getattr(winreg, "KEY_WOW64_64KEY", 0),
+        getattr(winreg, "KEY_WOW64_32KEY", 0),
+    )))
+
+    def read_value(root: int, key_path: str, value_name: str | None, view: int) -> str:
+        try:
+            with winreg.OpenKey(root, key_path, 0, winreg.KEY_READ | view) as key:
+                value, _kind = winreg.QueryValueEx(key, value_name)
+        except OSError:
+            return ""
+        return str(value).strip().strip('"')
+
+    for root in roots:
+        for view in views:
+            install_path = read_value(root, r"SOFTWARE\GitForWindows", "InstallPath", view)
+            if install_path:
+                candidates.extend(
+                    (
+                        str(PureWindowsPath(install_path) / "cmd"),
+                        str(PureWindowsPath(install_path) / "bin"),
+                    )
+                )
+            for executable in ("git.exe", "gh.exe"):
+                executable_path = read_value(
+                    root,
+                    rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{executable}",
+                    None,
+                    view,
+                )
+                if executable_path:
+                    candidates.append(str(PureWindowsPath(executable_path).parent))
+    return tuple(dict.fromkeys(candidates))
+
 TRANSIENT_PUSH_MARKERS = (
     "remote end hung up unexpectedly",
     "rpc failed",
@@ -111,7 +156,7 @@ def command_environment(
     if selected_platform == "darwin":
         entries = [*MACOS_COMMAND_PATHS, *entries]
     elif selected_platform == "win32":
-        entries = [*windows_command_paths(env), *entries]
+        entries = [*windows_registry_command_paths(), *windows_command_paths(env), *entries]
     env["PATH"] = path_separator.join(dict.fromkeys(entries))
     if proxy_url:
         env["HTTP_PROXY"] = proxy_url

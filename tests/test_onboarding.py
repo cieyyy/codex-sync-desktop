@@ -118,6 +118,20 @@ class ToolProbeTests(TestCase):
         self.assertIn("cannot execute", status["gh_reason"])
         mocked_auth.assert_not_called()
 
+    @patch("codex_sync_desktop.core.onboarding.github_auth_status")
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_missing_windows_command_has_actionable_detection_reason(self, mocked_run, mocked_auth):
+        mocked_run.side_effect = [
+            CommandResult(False, "[WinError 2] 系统找不到指定的文件。", 1),
+            CommandResult(True, "gh version 2.96", 0),
+        ]
+        mocked_auth.return_value = CommandResult(False, "not logged in", 1)
+
+        status = github_setup_status()
+
+        self.assertIn("PATH", status["git_reason"])
+        self.assertIn("Windows 注册表", status["git_reason"])
+
 
 class OfficialInstallerSelectionTests(TestCase):
     def test_selects_only_official_macos_universal_package(self):
@@ -212,6 +226,30 @@ class DependencyInstallFallbackTests(TestCase):
         mocked_download.assert_called_once()
         mocked_popen.assert_called_once()
 
+    @patch("codex_sync_desktop.core.onboarding.subprocess.Popen")
+    @patch("codex_sync_desktop.core.onboarding.write_windows_tool_install_script")
+    @patch("codex_sync_desktop.core.onboarding.download_latest_windows_tool_installers")
+    @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=None)
+    @patch("codex_sync_desktop.core.onboarding.run")
+    @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
+    def test_windows_fallback_only_installs_the_missing_tool(self, mocked_run, _which, mocked_download, mocked_script, mocked_popen):
+        mocked_run.side_effect = [CommandResult(False, "missing git", 1), CommandResult(True, "gh version 2.96", 0)]
+        mocked_download.return_value = (Path("git.exe"), None)
+        mocked_script.return_value = Path("install.ps1")
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = launch_dependency_install(Path(directory))
+
+        self.assertFalse(result.completed)
+        mocked_download.assert_called_once_with(
+            Path(directory),
+            "",
+            include_git=True,
+            include_gh=False,
+        )
+        mocked_script.assert_called_once_with(Path(directory), Path("git.exe"), None, "")
+        mocked_popen.assert_called_once()
+
     def test_tool_installer_cache_only_removes_known_files(self):
         with tempfile.TemporaryDirectory() as directory:
             app_home = Path(directory)
@@ -240,3 +278,15 @@ class DependencyInstallFallbackTests(TestCase):
         self.assertIn(str(git_installer), content)
         self.assertIn(str(gh_installer), content)
         self.assertNotIn("Remove-Item -Recurse", content)
+
+    def test_windows_install_script_skips_already_available_github_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app_home = Path(directory)
+            git_installer = app_home / "downloads" / "Git-for-Windows-64-bit.exe"
+
+            script = write_windows_tool_install_script(app_home, git_installer, None)
+            content = script.read_text(encoding="utf-8-sig")
+
+        self.assertIn(str(git_installer), content)
+        self.assertNotIn("msiexec.exe", content)
+        self.assertNotIn("$gh.ExitCode", content)
