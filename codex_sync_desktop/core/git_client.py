@@ -27,6 +27,7 @@ def windows_command_paths(environ: Mapping[str, str]) -> tuple[str, ...]:
     if local_app_data:
         candidates.extend(
             (
+                str(PureWindowsPath(local_app_data) / "codex-sync-desktop" / "tools" / "bin"),
                 str(PureWindowsPath(local_app_data) / "Programs" / "Git" / "cmd"),
                 str(PureWindowsPath(local_app_data) / "Programs" / "GitHub CLI"),
                 str(PureWindowsPath(local_app_data) / "Microsoft" / "WinGet" / "Links"),

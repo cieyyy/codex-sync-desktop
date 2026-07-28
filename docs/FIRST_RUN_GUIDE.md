@@ -7,7 +7,7 @@
 1. 已经安装并至少启动过一次 Codex。
 2. 一个可以接收验证邮件的邮箱。
 3. 可以访问 GitHub 的网络。
-4. 不需要提前手动安装 Git 或 GitHub CLI。向导会实际启动检测并自动安装；Windows 的 winget 不可用或失败时自动下载、校验官方 EXE/MSI，macOS 自动打开系统命令行工具安装器和经过 SHA-256 校验的官方 universal.pkg。用户只需确认系统安装授权。
+4. 不需要提前手动安装 Git 或 GitHub CLI。向导会实际启动检测并自动安装；Windows 的 GitHub CLI 使用官方 ZIP 便携版自动配置到软件目录，不需要管理员权限、MSI、PATH 或手动命令。Git 缺失时自动使用 winget 或经过校验的官方 EXE。macOS 自动打开系统命令行工具安装器和经过 SHA-256 校验的官方 universal.pkg。
 
 Windows 上即使 Git 安装在 `D:\Git` 等自定义目录，软件也会从注册表读取实际安装位置。修复时只处理检测失败的工具，已经可用的工具不会重复安装。
 

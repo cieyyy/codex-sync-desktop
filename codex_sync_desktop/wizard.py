@@ -225,11 +225,11 @@ class OnboardingWizard(tk.Toplevel):
     def _install_dependencies(self) -> None:
         if not messagebox.askyesno(
             "确认安装",
-            "软件将自动下载并安装缺少的 Git 和 GitHub CLI，可能请求 Windows UAC 或 macOS 系统授权，最多占用约 300 MiB 磁盘。是否继续？",
+            "软件将自动下载并安装缺少的 Git 和 GitHub CLI。Windows 的 GitHub CLI 会免安装配置到软件目录；只有安装 Git 或 macOS 系统工具时可能请求系统授权。最多占用约 300 MiB 磁盘。是否继续？",
             parent=self,
         ):
             return
-        self.dependency_status.configure(text="正在准备官方安装程序，请稍候...")
+        self.dependency_status.configure(text="正在自动准备必要工具，请稍候...")
         self.app._run_task(
             "准备必要工具",
             lambda: {"result": launch_dependency_install(self.app.store.app_home, self.proxy_url.get())},

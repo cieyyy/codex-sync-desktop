@@ -13,6 +13,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -247,38 +248,36 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Dependency
         winget = shutil.which("winget", path=command_environment().get("PATH"))
         winget_failures: list[str] = []
         latest_status = {"git": git_probe.ok, "gh": gh_probe.ok}
-        if winget:
-            packages = []
-            if not git_probe.ok:
-                packages.append(("Git.Git", "Git"))
-            if not gh_probe.ok:
-                packages.append(("GitHub.cli", "GitHub CLI"))
-            for package_id, label in packages:
-                install = run(
-                    [winget, "install", "--id", package_id, "-e", "--force", "--accept-package-agreements", "--accept-source-agreements"],
-                    timeout=900,
-                    proxy_url=proxy,
-                )
-                if not install.ok:
-                    winget_failures.append(f"{label}: {_probe_reason(install, 'winget 安装失败')}")
+        if winget and not git_probe.ok:
+            install = run(
+                [winget, "install", "--id", "Git.Git", "-e", "--force", "--accept-package-agreements", "--accept-source-agreements"],
+                timeout=900,
+                proxy_url=proxy,
+            )
+            if not install.ok:
+                winget_failures.append(f"Git: {_probe_reason(install, 'winget 安装失败')}")
             verified = github_setup_status(proxy)
             latest_status = verified
             if verified.get("git") and verified.get("gh"):
                 clear_tool_installer_cache(app_home)
                 return DependencyInstallResult(True, "Git 和 GitHub CLI 已自动安装完成，可以继续登录。")
+        if not bool(latest_status.get("gh")):
+            gh_path = install_windows_portable_gh(app_home, proxy)
+            gh_check = run([str(gh_path), "--version"], timeout=10, proxy_url=proxy)
+            if not gh_check.ok:
+                raise RuntimeError(f"GitHub CLI 便携版安装后无法启动：{_probe_reason(gh_check, '启动失败')}")
+            latest_status["gh"] = True
+            if bool(latest_status.get("git")):
+                clear_tool_installer_cache(app_home)
+                return DependencyInstallResult(True, "GitHub CLI 已在软件目录中自动安装完成，可以继续登录。")
         need_git = not bool(latest_status.get("git"))
-        need_gh = not bool(latest_status.get("gh"))
-        git_installer, gh_installer = download_latest_windows_tool_installers(
-            app_home,
-            proxy,
-            include_git=need_git,
-            include_gh=need_gh,
-        )
-        script = write_windows_tool_install_script(app_home, git_installer, gh_installer, proxy)
+        if not need_git:
+            raise RuntimeError("必要工具安装状态异常，请重新检测后重试")
+        git_installer = download_latest_windows_git_installer(app_home, proxy)
+        script = write_windows_tool_install_script(app_home, git_installer, proxy)
         subprocess.Popen(["powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", str(script)])
         fallback_note = "；winget 未成功，已切换官方安装包" if winget_failures else ""
-        tool_names = " 和 ".join(name for name, needed in (("Git", need_git), ("GitHub CLI", need_gh)) if needed)
-        return DependencyInstallResult(False, f"{tool_names} 官方安装程序已打开{fallback_note}。按系统提示授权，软件会自动检测安装结果。")
+        return DependencyInstallResult(False, f"GitHub CLI 已自动准备完成；Git 官方安装程序已打开{fallback_note}。按系统提示授权，软件会自动检测安装结果。")
     if sys.platform == "darwin":
         actions = []
         if not git_probe.ok:
@@ -292,40 +291,54 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Dependency
     raise RuntimeError("当前系统暂不支持自动安装，请使用官方下载入口")
 
 
-def download_latest_windows_tool_installers(
-    app_home: Path,
-    proxy_url: str = "",
-    *,
-    include_git: bool = True,
-    include_gh: bool = True,
-) -> tuple[Path | None, Path | None]:
-    git_installer = None
-    gh_installer = None
-    if include_git:
-        git_installer = download_verified_release_asset(
-            GIT_WINDOWS_LATEST_RELEASE_API,
-            select_windows_git_installer_asset,
-            app_home / "downloads" / "Git-for-Windows-64-bit.exe",
-            proxy_url,
-        )
-    if include_gh:
-        gh_installer = download_verified_release_asset(
-            GH_LATEST_RELEASE_API,
-            select_windows_gh_installer_asset,
-            app_home / "downloads" / "GitHub-CLI-windows-amd64.msi",
-            proxy_url,
-        )
-    return git_installer, gh_installer
+def download_latest_windows_git_installer(app_home: Path, proxy_url: str = "") -> Path:
+    return download_verified_release_asset(
+        GIT_WINDOWS_LATEST_RELEASE_API,
+        select_windows_git_installer_asset,
+        app_home / "downloads" / "Git-for-Windows-64-bit.exe",
+        proxy_url,
+    )
+
+
+def install_windows_portable_gh(app_home: Path, proxy_url: str = "") -> Path:
+    architecture = "arm64" if os.environ.get("PROCESSOR_ARCHITECTURE", "").lower() == "arm64" else "amd64"
+    archive = download_verified_release_asset(
+        GH_LATEST_RELEASE_API,
+        lambda release: select_windows_gh_portable_asset(release, architecture),
+        app_home / "downloads" / f"GitHub-CLI-windows-{architecture}.zip",
+        proxy_url,
+    )
+    destination = app_home / "tools" / "bin" / "gh.exe"
+    temporary = destination.with_suffix(".installing")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(archive) as package:
+            matches = []
+            for item in package.infolist():
+                normalized = item.filename.replace("\\", "/").lower().lstrip("/")
+                if not item.is_dir() and (normalized == "bin/gh.exe" or normalized.endswith("/bin/gh.exe")):
+                    matches.append(item)
+            if len(matches) != 1:
+                raise RuntimeError("GitHub CLI 官方 ZIP 内未找到唯一的 gh.exe")
+            executable = matches[0]
+            if executable.file_size <= 0 or executable.file_size > MAX_TOOL_DOWNLOAD_BYTES:
+                raise RuntimeError("GitHub CLI 可执行文件大小异常")
+            with package.open(executable) as source, temporary.open("wb") as output:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+        temporary.replace(destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    finally:
+        archive.unlink(missing_ok=True)
+    return destination
 
 
 def write_windows_tool_install_script(
     app_home: Path,
-    git_installer: Path | None,
-    gh_installer: Path | None,
+    git_installer: Path,
     proxy_url: str = "",
 ) -> Path:
-    if git_installer is None and gh_installer is None:
-        raise ValueError("没有需要安装的工具")
     proxy = validate_proxy_url(proxy_url)
     script = app_home / "install-sync-tools.ps1"
     proxy_lines = ""
@@ -333,24 +346,14 @@ def write_windows_tool_install_script(
         escaped_proxy = proxy.replace("'", "''")
         proxy_lines = f"$env:HTTP_PROXY='{escaped_proxy}'\n$env:HTTPS_PROXY='{escaped_proxy}'\n"
     lines = ["$ErrorActionPreference='Stop'", proxy_lines.rstrip()]
-    if git_installer is not None:
-        escaped_git = str(git_installer).replace("'", "''")
-        lines.extend(
-            (
-                f"$git=Start-Process -FilePath '{escaped_git}' -ArgumentList @('/VERYSILENT','/NORESTART','/NOCANCEL','/SP-') -Wait -PassThru",
-                'if ($git.ExitCode -ne 0) { throw "Git 安装失败，退出码 $($git.ExitCode)" }',
-                f"Remove-Item -LiteralPath '{escaped_git}' -Force -ErrorAction SilentlyContinue",
-            )
+    escaped_git = str(git_installer).replace("'", "''")
+    lines.extend(
+        (
+            f"$git=Start-Process -FilePath '{escaped_git}' -ArgumentList @('/VERYSILENT','/NORESTART','/NOCANCEL','/SP-') -Wait -PassThru",
+            'if ($git.ExitCode -ne 0) { throw "Git 安装失败，退出码 $($git.ExitCode)" }',
+            f"Remove-Item -LiteralPath '{escaped_git}' -Force -ErrorAction SilentlyContinue",
         )
-    if gh_installer is not None:
-        escaped_gh = str(gh_installer).replace("'", "''")
-        lines.extend(
-            (
-                f"$gh=Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i','{escaped_gh}','/passive','/norestart') -Wait -PassThru",
-                'if ($gh.ExitCode -ne 0) { throw "GitHub CLI 安装失败，退出码 $($gh.ExitCode)" }',
-                f"Remove-Item -LiteralPath '{escaped_gh}' -Force -ErrorAction SilentlyContinue",
-            )
-        )
+    )
     lines.extend(
         (
             "Write-Host '必要工具安装完成。Codex Sync Desktop 会自动检测结果。' -ForegroundColor Green",
@@ -436,12 +439,14 @@ def select_macos_gh_installer_asset(release: dict[str, object]) -> dict[str, obj
     return asset
 
 
-def select_windows_gh_installer_asset(release: dict[str, object]) -> dict[str, object]:
+def select_windows_gh_portable_asset(release: dict[str, object], architecture: str = "amd64") -> dict[str, object]:
+    if architecture not in {"amd64", "arm64"}:
+        raise ValueError("不支持的 Windows 架构")
     return _select_official_asset(
         release,
-        lambda name: name.endswith("_windows_amd64.msi"),
+        lambda name: name.endswith(f"_windows_{architecture}.zip"),
         "https://github.com/cli/cli/releases/download/",
-        "GitHub CLI Windows amd64 MSI",
+        f"GitHub CLI Windows {architecture} ZIP",
     )
 
 
@@ -484,6 +489,8 @@ def clear_tool_installer_cache(app_home: Path) -> int:
         if item.is_file() and item.name in {
             "Git-for-Windows-64-bit.exe",
             "GitHub-CLI-windows-amd64.msi",
+            "GitHub-CLI-windows-amd64.zip",
+            "GitHub-CLI-windows-arm64.zip",
             "GitHub-CLI-macOS-universal.pkg",
         }:
             item.unlink(missing_ok=True)

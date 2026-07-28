@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import zipfile
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -12,9 +13,10 @@ from codex_sync_desktop.core.onboarding import (
     create_private_repository,
     detect_system_proxy,
     github_setup_status,
+    install_windows_portable_gh,
     launch_dependency_install,
     select_macos_gh_installer_asset,
-    select_windows_gh_installer_asset,
+    select_windows_gh_portable_asset,
     select_windows_git_installer_asset,
     validate_proxy_url,
     write_windows_tool_install_script,
@@ -186,11 +188,20 @@ class OfficialInstallerSelectionTests(TestCase):
             select_macos_gh_installer_asset(release)
 
     def test_selects_official_windows_installers(self):
-        gh_release = {"assets": [{"name": "gh_2.96.0_windows_amd64.msi", "browser_download_url": "https://github.com/cli/cli/releases/download/v2.96.0/gh.msi"}]}
         git_release = {"assets": [{"name": "Git-2.51.0-64-bit.exe", "browser_download_url": "https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/Git.exe"}]}
 
-        self.assertTrue(str(select_windows_gh_installer_asset(gh_release)["name"]).endswith("amd64.msi"))
         self.assertTrue(str(select_windows_git_installer_asset(git_release)["name"]).endswith("64-bit.exe"))
+
+    def test_selects_official_windows_portable_github_cli(self):
+        release = {
+            "assets": [
+                {"name": "gh_2.96.0_windows_amd64.zip", "browser_download_url": "https://github.com/cli/cli/releases/download/v2.96.0/gh-amd64.zip"},
+                {"name": "gh_2.96.0_windows_arm64.zip", "browser_download_url": "https://github.com/cli/cli/releases/download/v2.96.0/gh-arm64.zip"},
+            ]
+        }
+
+        self.assertTrue(str(select_windows_gh_portable_asset(release, "amd64")["name"]).endswith("amd64.zip"))
+        self.assertTrue(str(select_windows_gh_portable_asset(release, "arm64")["name"]).endswith("arm64.zip"))
 
     def test_rejects_unofficial_windows_installer_url(self):
         release = {"assets": [{"name": "Git-2.51.0-64-bit.exe", "browser_download_url": "https://example.com/Git.exe"}]}
@@ -216,18 +227,19 @@ class DependencyInstallFallbackTests(TestCase):
         mocked_popen.assert_any_call(["/usr/bin/open", "GitHub-CLI.pkg"])
 
     @patch("codex_sync_desktop.core.onboarding.clear_tool_installer_cache")
+    @patch("codex_sync_desktop.core.onboarding.install_windows_portable_gh", return_value=Path("portable-gh.exe"))
     @patch("codex_sync_desktop.core.onboarding.github_setup_status")
     @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=r"C:\Program Files\WindowsApps\winget.exe")
     @patch("codex_sync_desktop.core.onboarding.run")
     @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
-    def test_windows_winget_install_is_rechecked_automatically(self, mocked_run, _which, mocked_status, mocked_clear):
+    def test_windows_winget_git_and_portable_gh_are_rechecked_automatically(self, mocked_run, _which, mocked_status, mocked_portable, mocked_clear):
         mocked_run.side_effect = [
             CommandResult(False, "missing git", 1),
             CommandResult(False, "missing gh", 1),
             CommandResult(True, "installed git", 0),
             CommandResult(True, "installed gh", 0),
         ]
-        mocked_status.return_value = {"git": True, "gh": True, "authenticated": False}
+        mocked_status.return_value = {"git": True, "gh": False, "authenticated": False}
 
         with tempfile.TemporaryDirectory() as directory:
             result = launch_dependency_install(Path(directory))
@@ -235,48 +247,70 @@ class DependencyInstallFallbackTests(TestCase):
         self.assertTrue(result.completed)
         self.assertEqual(mocked_run.call_count, 4)
         mocked_status.assert_called_once()
+        mocked_portable.assert_called_once()
         mocked_clear.assert_called_once()
 
     @patch("codex_sync_desktop.core.onboarding.subprocess.Popen")
     @patch("codex_sync_desktop.core.onboarding.write_windows_tool_install_script")
-    @patch("codex_sync_desktop.core.onboarding.download_latest_windows_tool_installers")
+    @patch("codex_sync_desktop.core.onboarding.download_latest_windows_git_installer")
+    @patch("codex_sync_desktop.core.onboarding.install_windows_portable_gh", return_value=Path("portable-gh.exe"))
     @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=None)
     @patch("codex_sync_desktop.core.onboarding.run")
     @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
-    def test_windows_without_winget_downloads_official_installers(self, mocked_run, _which, mocked_download, mocked_script, mocked_popen):
-        mocked_run.side_effect = [CommandResult(False, "missing git", 1), CommandResult(False, "missing gh", 1)]
-        mocked_download.return_value = (Path("git.exe"), Path("gh.msi"))
+    def test_windows_without_winget_uses_portable_gh_and_only_opens_git_installer(self, mocked_run, _which, mocked_portable, mocked_download, mocked_script, mocked_popen):
+        mocked_run.side_effect = [
+            CommandResult(False, "missing git", 1),
+            CommandResult(False, "missing gh", 1),
+            CommandResult(True, "gh version", 0),
+        ]
+        mocked_download.return_value = Path("git.exe")
         mocked_script.return_value = Path("install.ps1")
 
         with tempfile.TemporaryDirectory() as directory:
             result = launch_dependency_install(Path(directory))
 
         self.assertFalse(result.completed)
-        mocked_download.assert_called_once()
+        mocked_portable.assert_called_once()
+        mocked_download.assert_called_once_with(Path(directory), "")
+        mocked_script.assert_called_once_with(Path(directory), Path("git.exe"), "")
         mocked_popen.assert_called_once()
+
+    @patch("codex_sync_desktop.core.onboarding.clear_tool_installer_cache")
+    @patch("codex_sync_desktop.core.onboarding.install_windows_portable_gh", return_value=Path("portable-gh.exe"))
+    @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=None)
+    @patch("codex_sync_desktop.core.onboarding.run")
+    @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
+    def test_windows_only_missing_gh_completes_without_opening_installer(self, mocked_run, _which, mocked_portable, mocked_clear):
+        mocked_run.side_effect = [
+            CommandResult(True, "git version", 0),
+            CommandResult(False, "missing gh", 1),
+            CommandResult(True, "gh version", 0),
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = launch_dependency_install(Path(directory))
+
+        self.assertTrue(result.completed)
+        mocked_portable.assert_called_once_with(Path(directory), "")
+        mocked_clear.assert_called_once()
 
     @patch("codex_sync_desktop.core.onboarding.subprocess.Popen")
     @patch("codex_sync_desktop.core.onboarding.write_windows_tool_install_script")
-    @patch("codex_sync_desktop.core.onboarding.download_latest_windows_tool_installers")
+    @patch("codex_sync_desktop.core.onboarding.download_latest_windows_git_installer")
     @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=None)
     @patch("codex_sync_desktop.core.onboarding.run")
     @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
     def test_windows_fallback_only_installs_the_missing_tool(self, mocked_run, _which, mocked_download, mocked_script, mocked_popen):
         mocked_run.side_effect = [CommandResult(False, "missing git", 1), CommandResult(True, "gh version 2.96", 0)]
-        mocked_download.return_value = (Path("git.exe"), None)
+        mocked_download.return_value = Path("git.exe")
         mocked_script.return_value = Path("install.ps1")
 
         with tempfile.TemporaryDirectory() as directory:
             result = launch_dependency_install(Path(directory))
 
         self.assertFalse(result.completed)
-        mocked_download.assert_called_once_with(
-            Path(directory),
-            "",
-            include_git=True,
-            include_gh=False,
-        )
-        mocked_script.assert_called_once_with(Path(directory), Path("git.exe"), None, "")
+        mocked_download.assert_called_once_with(Path(directory), "")
+        mocked_script.assert_called_once_with(Path(directory), Path("git.exe"), "")
         mocked_popen.assert_called_once()
 
     def test_tool_installer_cache_only_removes_known_files(self):
@@ -292,30 +326,34 @@ class DependencyInstallFallbackTests(TestCase):
             self.assertEqual(removed, 1)
             self.assertTrue((downloads / "customer-file.txt").exists())
 
-    def test_windows_install_script_waits_checks_exit_codes_and_only_removes_known_installers(self):
+    @patch("codex_sync_desktop.core.onboarding.download_verified_release_asset")
+    def test_portable_gh_extracts_only_executable_to_managed_directory(self, mocked_download):
+        with tempfile.TemporaryDirectory() as directory:
+            app_home = Path(directory)
+            archive = app_home / "downloads" / "gh.zip"
+            archive.parent.mkdir()
+            with zipfile.ZipFile(archive, "w") as package:
+                package.writestr("bin/gh.exe", b"portable-gh")
+                package.writestr("share/man.txt", b"unused")
+            mocked_download.return_value = archive
+
+            installed = install_windows_portable_gh(app_home)
+
+            self.assertEqual(installed, app_home / "tools" / "bin" / "gh.exe")
+            self.assertEqual(installed.read_bytes(), b"portable-gh")
+            self.assertFalse(archive.exists())
+            self.assertFalse((app_home / "tools" / "share").exists())
+
+    def test_windows_install_script_waits_checks_exit_code_and_only_removes_git_installer(self):
         with tempfile.TemporaryDirectory() as directory:
             app_home = Path(directory)
             git_installer = app_home / "downloads" / "Git-for-Windows-64-bit.exe"
-            gh_installer = app_home / "downloads" / "GitHub-CLI-windows-amd64.msi"
 
-            script = write_windows_tool_install_script(app_home, git_installer, gh_installer)
+            script = write_windows_tool_install_script(app_home, git_installer)
             content = script.read_text(encoding="utf-8-sig")
 
         self.assertIn("-Wait -PassThru", content)
         self.assertIn("$git.ExitCode", content)
-        self.assertIn("$gh.ExitCode", content)
-        self.assertIn(str(git_installer), content)
-        self.assertIn(str(gh_installer), content)
-        self.assertNotIn("Remove-Item -Recurse", content)
-
-    def test_windows_install_script_skips_already_available_github_cli(self):
-        with tempfile.TemporaryDirectory() as directory:
-            app_home = Path(directory)
-            git_installer = app_home / "downloads" / "Git-for-Windows-64-bit.exe"
-
-            script = write_windows_tool_install_script(app_home, git_installer, None)
-            content = script.read_text(encoding="utf-8-sig")
-
         self.assertIn(str(git_installer), content)
         self.assertNotIn("msiexec.exe", content)
-        self.assertNotIn("$gh.ExitCode", content)
+        self.assertNotIn("Remove-Item -Recurse", content)

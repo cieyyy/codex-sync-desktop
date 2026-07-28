@@ -64,7 +64,7 @@ python3 -m unittest discover -v
 
 日常使用可以直接点击“一键同步”：未选择其他来源设备时只上传本机；选择来源设备后会依次拉取、导入合并、修复侧栏并上传本机。包含导入时必须先退出 Codex、ChatGPT 和 Codex++。
 
-面向完全没有 Git/GitHub CLI 的用户，向导会自动安装；Windows 的 winget 不可用或失败时改用经过校验的官方安装包，macOS 使用系统命令行工具安装器和经过校验的 GitHub CLI 官方安装包。系统授权完成后软件自动复检，不需要执行命令。详见 [小白首次配置手册](docs/FIRST_RUN_GUIDE.md)。
+面向完全没有 Git/GitHub CLI 的用户，向导会自动安装；Windows 的 GitHub CLI 使用经过 SHA-256 校验的官方 ZIP 便携版，自动放入软件私有工具目录，不需要管理员权限、MSI、系统 PATH 或手动命令。Git 缺失时仍优先使用 winget，失败后打开经过校验的 Git 官方安装包。macOS 使用系统命令行工具安装器和经过校验的 GitHub CLI 官方安装包。详见 [小白首次配置手册](docs/FIRST_RUN_GUIDE.md)。
 
 Windows 会同时检查当前 `PATH`、常用安装目录和注册表，因此 Git 安装在 `D:\Git` 等自定义目录时也可以被识别。自动修复只安装实际缺失的工具，不会重复安装已经可用的 Git 或 GitHub CLI。
 
