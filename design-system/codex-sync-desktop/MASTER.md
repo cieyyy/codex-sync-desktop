@@ -19,18 +19,18 @@
 
 | Role | Hex | CSS Variable |
 |------|-----|--------------|
-| Primary | `#39FF88` | `--color-primary` |
+| Primary | `#38BDF8` | `--color-primary` |
 | On Primary | `#050816` | `--color-on-primary` |
 | Secondary | `#1D4ED8` | `--color-secondary` |
-| Accent/CTA | `#22D3EE` | `--color-accent` |
+| Accent/CTA | `#67E8F9` | `--color-accent` |
 | Background | `#050816` | `--color-background` |
 | Foreground | `#F8FAFC` | `--color-foreground` |
 | Muted | `#101A38` | `--color-muted` |
 | Border | `#1D2B53` | `--color-border` |
 | Destructive | `#F43F5E` | `--color-destructive` |
-| Ring | `#22D3EE` | `--color-ring` |
+| Ring | `#67E8F9` | `--color-ring` |
 
-**Color Notes:** Deep navy operations console with neon green primary actions, electric blue secondary actions, cyan focus, and no gray normal buttons.
+**Color Notes:** Deep navy operations console with high-contrast electric cyan primary actions, royal blue secondary actions, cyan focus, and no gray normal buttons. Green is reserved for success feedback only.
 
 ### Typography
 
@@ -76,7 +76,7 @@
 ```css
 /* Primary Button */
 .btn-primary {
-  background: #39FF88;
+  background: #38BDF8;
   color: #050816;
   padding: 12px 24px;
   border-radius: 8px;
@@ -136,9 +136,9 @@
 }
 
 .input:focus {
-  border-color: #22D3EE;
+  border-color: #67E8F9;
   outline: none;
-  box-shadow: 0 0 0 3px #22D3EE30;
+  box-shadow: 0 0 0 3px #67E8F930;
 }
 ```
 
