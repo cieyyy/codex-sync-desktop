@@ -77,6 +77,11 @@ def repair_indexes(
             sessions.append(info)
         else:
             report.skipped += 1
+    sessions, duplicate_count = _select_canonical_sessions(sessions)
+    if duplicate_count:
+        report.warnings.append(
+            f"发现 {duplicate_count} 个同会话 ID 的额外文件；侧栏按活动状态、内容完整度和更新时间选择代表文件，原文件均保留"
+        )
     databases = [path for path in find_state_databases(codex_home) if _has_threads_table(path)]
     if not databases:
         raise FileNotFoundError(f"No Codex state database with a threads table found in {codex_home}")
@@ -98,8 +103,11 @@ def repair_indexes(
             if session.session_id in db_names:
                 report.updated += _update_existing(connection, columns, session)
             else:
-                _insert_thread(connection, columns, session)
-                report.inserted += 1
+                if _insert_thread(connection, columns, session):
+                    report.inserted += 1
+                else:
+                    report.updated += _update_existing(connection, columns, session)
+                db_names[session.session_id] = session.title
         connection.commit()
     _write_session_index(codex_home / "session_index.jsonl", sessions, resolved_names)
     report.index_entries = len(sessions)
@@ -108,7 +116,7 @@ def repair_indexes(
     return report
 
 
-def _insert_thread(connection: sqlite3.Connection, columns: set[str], session: SessionInfo) -> None:
+def _insert_thread(connection: sqlite3.Connection, columns: set[str], session: SessionInfo) -> bool:
     values: Dict[str, Any] = {
         "id": session.session_id,
         "rollout_path": str(session.path),
@@ -139,7 +147,36 @@ def _insert_thread(connection: sqlite3.Connection, columns: set[str], session: S
     selected = {key: value for key, value in values.items() if key in columns}
     names = ", ".join(selected)
     placeholders = ", ".join("?" for _ in selected)
-    connection.execute(f"INSERT INTO threads ({names}) VALUES ({placeholders})", tuple(selected.values()))
+    cursor = connection.execute(
+        f"INSERT INTO threads ({names}) VALUES ({placeholders}) ON CONFLICT(id) DO NOTHING",
+        tuple(selected.values()),
+    )
+    return cursor.rowcount == 1
+
+
+def _select_canonical_sessions(sessions: Iterable[SessionInfo]) -> tuple[list[SessionInfo], int]:
+    selected: Dict[str, SessionInfo] = {}
+    total = 0
+    for session in sessions:
+        total += 1
+        current = selected.get(session.session_id)
+        if current is None or _canonical_score(session) > _canonical_score(current):
+            selected[session.session_id] = session
+    result = sorted(selected.values(), key=lambda item: (item.updated_at, item.session_id, str(item.path)))
+    return result, total - len(result)
+
+
+def _canonical_score(session: SessionInfo) -> tuple[int, int, int, str]:
+    try:
+        content_bytes = session.path.stat().st_size
+    except OSError:
+        content_bytes = 0
+    return (
+        1 if not session.archived else 0,
+        content_bytes,
+        session.updated_at,
+        str(session.path),
+    )
 
 
 def _update_existing(connection: sqlite3.Connection, columns: set[str], session: SessionInfo) -> int:

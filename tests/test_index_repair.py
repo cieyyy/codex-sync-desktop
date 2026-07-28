@@ -102,6 +102,37 @@ class IndexRepairTests(unittest.TestCase):
             with closing(sqlite3.connect(modern)) as connection:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM threads WHERE id=?", (session_id,)).fetchone()[0], 1)
 
+    def test_duplicate_session_ids_choose_richer_active_content_without_unique_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            database = create_state_database(codex_home)
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            first = write_session(codex_home, session_id, "Original prompt", "Short answer")
+            second = codex_home / "sessions" / "2026" / "07" / "26" / f"rollout-copy-{session_id}.jsonl"
+            second.parent.mkdir(parents=True)
+            records = [json.loads(line) for line in first.read_text(encoding="utf-8").splitlines()]
+            records.append({
+                "timestamp": "2026-07-26T12:00:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "A much richer continuation from another device"}],
+                },
+            })
+            second.write_text("".join(json.dumps(item) + "\n" for item in records), encoding="utf-8")
+
+            report = repair_indexes(codex_home, create_backup=False)
+
+            self.assertEqual(report.inserted, 1)
+            self.assertTrue(any("同会话 ID" in warning for warning in report.warnings))
+            with closing(sqlite3.connect(database)) as connection:
+                rows = connection.execute("SELECT id, rollout_path FROM threads WHERE id=?", (session_id,)).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][1], str(second.resolve()))
+            index = [json.loads(line) for line in (codex_home / "session_index.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len([item for item in index if item["id"] == session_id]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -505,6 +505,10 @@ class CodexSyncApp(tk.Tk):
                     copied = len(result["copied"])
                     merged = len(result["merged"])
                     titles = len(plan.title_updates)
+                else:
+                    # A previous interrupted import may have copied files before its index repair failed.
+                    repair_indexes(self.settings.codex_path, {}, create_backup=True)
+                    prune_backup_history(self.settings.codex_path, keep=1)
             report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
             self._checked_git(git.commit_and_push(f"sync: one-click update {local_device}"))
             return (
