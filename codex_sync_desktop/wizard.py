@@ -22,18 +22,20 @@ from .core.onboarding import (
     launch_github_login,
     validate_proxy_url,
 )
+from .ui_theme import COLORS, center_window
 
 
 class OnboardingWizard(tk.Toplevel):
-    def __init__(self, app: Any):
+    def __init__(self, app: Any, initial_step: int = 0):
         super().__init__(app)
+        self.withdraw()
         self.app = app
         self.title("首次配置向导")
-        self.geometry("860x640")
         self.minsize(760, 580)
+        self.configure(background=COLORS["background"])
         self.transient(app)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
-        self.step = 0
+        self.step = min(max(int(initial_step), 0), 3)
         self.network_ok = False
         self.account_status: dict[str, object] = {}
         self.dependency_poll_attempts = 0
@@ -48,6 +50,10 @@ class OnboardingWizard(tk.Toplevel):
         self.device_name = tk.StringVar(value=app.settings.device_name)
         self.proxy_url.trace_add("write", lambda *_args: self._invalidate_network())
         self._build()
+        center_window(self, app, 860, 640)
+        self.deiconify()
+        self.lift(app)
+        self.focus_force()
         self.grab_set()
 
     def _build(self) -> None:
@@ -64,6 +70,12 @@ class OnboardingWizard(tk.Toplevel):
             page = ttk.Frame(self.page_host, style="Panel.TFrame")
             builder(page)
             self.pages.append(page)
+        activity = ttk.Frame(shell)
+        activity.pack(fill="x", pady=(14, 0))
+        self.activity_progress = ttk.Progressbar(activity, mode="indeterminate", length=180, style="Tech.Horizontal.TProgressbar")
+        self.activity_progress.pack(side="left")
+        self.activity_label = ttk.Label(activity, text="等待操作", style="Muted.TLabel", anchor="w")
+        self.activity_label.pack(side="left", fill="x", expand=True, padx=(12, 0))
         footer = ttk.Frame(shell)
         footer.pack(fill="x", pady=(16, 0))
         self.back_button = ttk.Button(footer, text="上一步", command=self._back)
@@ -72,6 +84,17 @@ class OnboardingWizard(tk.Toplevel):
         self.next_button = ttk.Button(footer, text="下一步", style="Accent.TButton", command=self._next)
         self.next_button.pack(side="right")
         self._show_step()
+
+    def set_task_state(self, text: str, *, active: bool, failed: bool = False) -> None:
+        if not hasattr(self, "activity_progress"):
+            return
+        if active:
+            self.activity_progress.start(12)
+            self.activity_label.configure(text=text, style="Activity.TLabel")
+        else:
+            self.activity_progress.stop()
+            self.activity_progress.configure(value=0)
+            self.activity_label.configure(text=text, style="ActivityError.TLabel" if failed else "Muted.TLabel")
 
     @staticmethod
     def _heading(parent: ttk.Frame, title: str, subtitle: str) -> None:

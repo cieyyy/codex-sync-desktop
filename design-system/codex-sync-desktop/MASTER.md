@@ -7,9 +7,9 @@
 ---
 
 **Project:** Codex Sync Desktop
-**Generated:** 2026-07-27 22:11:31
-**Category:** Productivity Tool
-**Design Dials:** Variance 3/10 (Centered / Minimal) | Motion 2/10 (Subtle) | Density 8/10 (Dense / Dashboard)
+**Generated:** 2026-07-28 18:38:53
+**Category:** Financial Dashboard
+**Design Dials:** Variance 4/10 (Balanced / Modern) | Motion 3/10 (Subtle) | Density 8/10 (Dense / Dashboard)
 
 ---
 
@@ -19,29 +19,29 @@
 
 | Role | Hex | CSS Variable |
 |------|-----|--------------|
-| Primary | `#0D9488` | `--color-primary` |
-| On Primary | `#FFFFFF` | `--color-on-primary` |
-| Secondary | `#14B8A6` | `--color-secondary` |
-| Accent/CTA | `#EA580C` | `--color-accent` |
-| Background | `#F0FDFA` | `--color-background` |
-| Foreground | `#134E4A` | `--color-foreground` |
-| Muted | `#E8F1F4` | `--color-muted` |
-| Border | `#99F6E4` | `--color-border` |
-| Destructive | `#DC2626` | `--color-destructive` |
-| Ring | `#0D9488` | `--color-ring` |
+| Primary | `#39FF88` | `--color-primary` |
+| On Primary | `#050816` | `--color-on-primary` |
+| Secondary | `#1D4ED8` | `--color-secondary` |
+| Accent/CTA | `#22D3EE` | `--color-accent` |
+| Background | `#050816` | `--color-background` |
+| Foreground | `#F8FAFC` | `--color-foreground` |
+| Muted | `#101A38` | `--color-muted` |
+| Border | `#1D2B53` | `--color-border` |
+| Destructive | `#F43F5E` | `--color-destructive` |
+| Ring | `#22D3EE` | `--color-ring` |
 
-**Color Notes:** Teal focus + action orange [Accent adjusted from #F97316 for WCAG 3:1]
+**Color Notes:** Deep navy operations console with neon green primary actions, electric blue secondary actions, cyan focus, and no gray normal buttons.
 
 ### Typography
 
-- **Heading Font:** Fira Code
-- **Body Font:** Fira Sans
-- **Mood:** dashboard, data, analytics, code, technical, precise
-- **Google Fonts:** [Fira Code + Fira Sans](https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap)
+- **Heading Font:** Orbitron
+- **Body Font:** JetBrains Mono
+- **Mood:** cyberpunk, neon, glitch, hud, sci-fi, dark, matrix green, magenta, chamfered, tactical
+- **Google Fonts:** [Orbitron + JetBrains Mono](https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Orbitron:wght@700;900&display=swap)
 
 **CSS Import:**
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Orbitron:wght@700;900&display=swap');
 ```
 
 ### Spacing Variables
@@ -76,8 +76,8 @@
 ```css
 /* Primary Button */
 .btn-primary {
-  background: #EA580C;
-  color: white;
+  background: #39FF88;
+  color: #050816;
   padding: 12px 24px;
   border-radius: 8px;
   font-weight: 600;
@@ -93,8 +93,9 @@
 /* Secondary Button */
 .btn-secondary {
   background: transparent;
-  color: #0D9488;
-  border: 2px solid #0D9488;
+  background: #1D4ED8;
+  color: #F8FAFC;
+  border: 1px solid #2563EB;
   padding: 12px 24px;
   border-radius: 8px;
   font-weight: 600;
@@ -107,7 +108,7 @@
 
 ```css
 .card {
-  background: #F0FDFA;
+  background: #0B1228;
   border-radius: 12px;
   padding: 24px;
   box-shadow: var(--shadow-md);
@@ -126,16 +127,18 @@
 ```css
 .input {
   padding: 12px 16px;
-  border: 1px solid #E2E8F0;
+  color: #F8FAFC;
+  background: #101A38;
+  border: 1px solid #1D2B53;
   border-radius: 8px;
   font-size: 16px;
   transition: border-color 200ms ease;
 }
 
 .input:focus {
-  border-color: #0D9488;
+  border-color: #22D3EE;
   outline: none;
-  box-shadow: 0 0 0 3px #0D948820;
+  box-shadow: 0 0 0 3px #22D3EE30;
 }
 ```
 
@@ -148,7 +151,7 @@
 }
 
 .modal {
-  background: white;
+  background: #0B1228;
   border-radius: 16px;
   padding: 32px;
   box-shadow: var(--shadow-xl);
@@ -161,13 +164,13 @@
 
 ## Style Guidelines
 
-**Style:** Exaggerated Minimalism
+**Style:** Dark Mode (OLED)
 
-**Keywords:** Bold minimalism, oversized typography, high contrast, negative space, loud minimal, statement design
+**Keywords:** Dark theme, low light, high contrast, deep black, midnight blue, eye-friendly, OLED, night mode, power efficient
 
-**Best For:** Fashion, architecture, portfolios, agency landing pages, luxury brands, editorial
+**Best For:** Night-mode apps, coding platforms, entertainment, eye-strain prevention, OLED devices, low-light
 
-**Key Effects:** font-size: clamp(3rem 10vw 12rem), font-weight: 900, letter-spacing: -0.05em, massive whitespace
+**Key Effects:** Minimal glow (text-shadow: 0 0 10px), dark-to-light transitions, low white emission, high readability, visible focus
 
 ### Page Pattern
 
@@ -197,8 +200,8 @@ gsap.from(el, { opacity: 0, y: 12, duration: 0.35, ease: 'power1.out', scrollTri
 
 ## Anti-Patterns (Do NOT Use)
 
-- ❌ Complex onboarding
-- ❌ Slow performance
+- ❌ Light mode default
+- ❌ Slow rendering
 
 ### Additional Forbidden Patterns
 

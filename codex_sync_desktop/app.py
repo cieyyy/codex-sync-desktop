@@ -32,6 +32,7 @@ from .core.index_repair import repair_indexes
 from .core.onboarding import validate_proxy_url
 from .core.processes import running_codex_processes
 from .core.sessions import apply_import, export_sanitized_sessions, list_source_devices, plan_import
+from .ui_theme import COLORS, center_window
 from .wizard import OnboardingWizard
 
 
@@ -42,6 +43,10 @@ class QueueLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         self.messages.put(("log", self.format(record)))
+
+
+def dependency_setup_incomplete(diagnostics: dict[str, Any]) -> bool:
+    return not bool(diagnostics.get("git")) or not bool(diagnostics.get("gh"))
 
 
 class CodexSyncApp(tk.Tk):
@@ -56,10 +61,11 @@ class CodexSyncApp(tk.Tk):
         self.pages: dict[str, ttk.Frame] = {}
         self.nav_buttons: dict[str, ttk.Button] = {}
         self._busy = False
+        self._dependency_prompted = False
         self.title(f"Codex Sync Desktop {__version__}")
         self.geometry("1120x760")
         self.minsize(920, 640)
-        self.configure(background="#F0FDFA")
+        self.configure(background=COLORS["background"])
         self._configure_logging()
         self._configure_styles()
         self._build_ui()
@@ -94,42 +100,57 @@ class CodexSyncApp(tk.Tk):
         if "clam" in style.theme_names():
             style.theme_use("clam")
         body_font = ("Segoe UI", 10) if os.name == "nt" else ("Helvetica Neue", 12)
-        heading_font = ("Segoe UI Semibold", 19) if os.name == "nt" else ("Helvetica Neue", 20, "bold")
-        section_font = ("Segoe UI Semibold", 12) if os.name == "nt" else ("Helvetica Neue", 14, "bold")
+        heading_font = ("Cascadia Code SemiBold", 19) if os.name == "nt" else ("SF Mono", 20, "bold")
+        section_font = ("Cascadia Code SemiBold", 11) if os.name == "nt" else ("SF Mono", 13, "bold")
         self.option_add("*Font", body_font)
-        style.configure("TFrame", background="#F0FDFA")
-        style.configure("Panel.TFrame", background="#ffffff")
-        style.configure("Sidebar.TFrame", background="#134E4A")
-        style.configure("TLabel", background="#F0FDFA", foreground="#134E4A", font=body_font)
-        style.configure("Panel.TLabel", background="#ffffff", foreground="#134E4A", font=body_font)
-        style.configure("Title.TLabel", font=heading_font, background="#F0FDFA", foreground="#134E4A")
-        style.configure("Section.TLabel", font=section_font, background="#F0FDFA", foreground="#134E4A")
-        style.configure("PanelSection.TLabel", font=section_font, background="#FFFFFF", foreground="#134E4A")
-        style.configure("Muted.TLabel", foreground="#526A68", background="#F0FDFA", font=body_font)
-        style.configure("PanelMuted.TLabel", foreground="#526A68", background="#FFFFFF", font=body_font)
-        style.configure("SidebarTitle.TLabel", foreground="#FFFFFF", background="#134E4A", font=section_font)
-        style.configure("SidebarMuted.TLabel", foreground="#99F6E4", background="#134E4A", font=body_font)
-        style.configure("Status.TLabel", foreground="#134E4A", background="#CCFBF1", padding=(12, 7), font=body_font)
-        style.configure("Accent.TButton", foreground="#FFFFFF", background="#0D9488", padding=(14, 9), font=body_font)
-        style.map("Accent.TButton", background=[("active", "#0F766E"), ("disabled", "#94A3B8")], foreground=[("disabled", "#F8FAFC")])
-        style.configure("Danger.TButton", foreground="#FFFFFF", background="#DC2626", padding=(14, 9), font=body_font)
-        style.map("Danger.TButton", background=[("active", "#B91C1C"), ("disabled", "#CBD5E1")])
-        style.configure("Nav.TButton", foreground="#CCFBF1", background="#134E4A", anchor="w", padding=(18, 12), borderwidth=0, font=body_font)
-        style.map("Nav.TButton", background=[("active", "#115E59")], foreground=[("active", "#FFFFFF")])
-        style.configure("NavActive.TButton", foreground="#FFFFFF", background="#0D9488", anchor="w", padding=(18, 12), borderwidth=0, font=body_font)
-        style.configure("TButton", padding=(12, 8), font=body_font)
-        style.configure("TEntry", padding=(8, 7), font=body_font)
-        style.configure("TCombobox", padding=(8, 7), font=body_font)
-        style.configure("Treeview", rowheight=32, background="#FFFFFF", fieldbackground="#FFFFFF", foreground="#134E4A", bordercolor="#99F6E4", font=body_font)
-        style.map("Treeview", background=[("selected", "#CCFBF1")], foreground=[("selected", "#134E4A")])
-        style.configure("Treeview.Heading", font=section_font, background="#E8F1F4", foreground="#134E4A", padding=(8, 7))
+        style.configure("TFrame", background=COLORS["background"])
+        style.configure("Panel.TFrame", background=COLORS["surface"])
+        style.configure("Sidebar.TFrame", background=COLORS["sidebar"])
+        style.configure("TLabel", background=COLORS["background"], foreground=COLORS["text"], font=body_font)
+        style.configure("Panel.TLabel", background=COLORS["surface"], foreground=COLORS["text"], font=body_font)
+        style.configure("Title.TLabel", font=heading_font, background=COLORS["background"], foreground=COLORS["text"])
+        style.configure("Section.TLabel", font=section_font, background=COLORS["background"], foreground=COLORS["cyan"])
+        style.configure("PanelSection.TLabel", font=section_font, background=COLORS["surface"], foreground=COLORS["cyan"])
+        style.configure("Muted.TLabel", foreground=COLORS["text_muted"], background=COLORS["background"], font=body_font)
+        style.configure("PanelMuted.TLabel", foreground=COLORS["text_muted"], background=COLORS["surface"], font=body_font)
+        style.configure("Activity.TLabel", foreground=COLORS["primary"], background=COLORS["background"], font=body_font)
+        style.configure("ActivityError.TLabel", foreground=COLORS["danger"], background=COLORS["background"], font=body_font)
+        style.configure("SidebarTitle.TLabel", foreground=COLORS["text"], background=COLORS["sidebar"], font=section_font)
+        style.configure("SidebarMuted.TLabel", foreground=COLORS["cyan"], background=COLORS["sidebar"], font=body_font)
+        style.configure("Status.TLabel", foreground=COLORS["primary"], background=COLORS["surface_alt"], padding=(12, 7), font=body_font)
+        style.configure("Error.Status.TLabel", foreground=COLORS["danger"], background=COLORS["surface_alt"], padding=(12, 7), font=body_font)
+        style.configure("TButton", foreground=COLORS["text"], background=COLORS["secondary"], padding=(12, 8), borderwidth=1, font=body_font)
+        style.map("TButton", background=[("disabled", COLORS["button_disabled"]), ("pressed", COLORS["secondary_pressed"]), ("active", COLORS["secondary_hover"])], foreground=[("disabled", COLORS["text_disabled"]), ("!disabled", COLORS["text"])])
+        style.configure("Accent.TButton", foreground=COLORS["background"], background=COLORS["primary"], padding=(14, 9), borderwidth=1, font=body_font)
+        style.map("Accent.TButton", background=[("disabled", COLORS["button_disabled"]), ("pressed", COLORS["primary_pressed"]), ("active", COLORS["primary_hover"])], foreground=[("disabled", COLORS["text_disabled"]), ("!disabled", COLORS["background"])])
+        style.configure("Danger.TButton", foreground=COLORS["text"], background=COLORS["danger"], padding=(14, 9), borderwidth=1, font=body_font)
+        style.map("Danger.TButton", background=[("disabled", COLORS["button_disabled"]), ("active", COLORS["danger_hover"])], foreground=[("disabled", COLORS["text_disabled"])])
+        style.configure("Nav.TButton", foreground=COLORS["text_muted"], background=COLORS["sidebar"], anchor="w", padding=(18, 12), borderwidth=0, font=body_font)
+        style.map("Nav.TButton", background=[("active", COLORS["surface_alt"])], foreground=[("active", COLORS["text"])])
+        style.configure("NavActive.TButton", foreground=COLORS["background"], background=COLORS["primary"], anchor="w", padding=(18, 12), borderwidth=0, font=body_font)
+        style.configure("TEntry", fieldbackground=COLORS["surface_alt"], foreground=COLORS["text"], insertcolor=COLORS["primary"], bordercolor=COLORS["border"], padding=(8, 7), font=body_font)
+        style.map("TEntry", bordercolor=[("focus", COLORS["cyan"])], lightcolor=[("focus", COLORS["cyan"])], darkcolor=[("focus", COLORS["cyan"])])
+        style.configure("TCombobox", fieldbackground=COLORS["surface_alt"], background=COLORS["secondary"], foreground=COLORS["text"], arrowcolor=COLORS["text"], bordercolor=COLORS["border"], padding=(8, 7), font=body_font)
+        style.map("TCombobox", fieldbackground=[("readonly", COLORS["surface_alt"])], selectbackground=[("readonly", COLORS["surface_alt"])], selectforeground=[("readonly", COLORS["text"])])
+        style.configure("TCheckbutton", background=COLORS["surface"], foreground=COLORS["text"], indicatorcolor=COLORS["surface_alt"], font=body_font)
+        style.map("TCheckbutton", background=[("active", COLORS["surface"])], foreground=[("disabled", COLORS["text_disabled"])], indicatorcolor=[("selected", COLORS["primary"])])
+        style.configure("Treeview", rowheight=32, background=COLORS["surface"], fieldbackground=COLORS["surface"], foreground=COLORS["text"], bordercolor=COLORS["border"], lightcolor=COLORS["border"], darkcolor=COLORS["border"], font=body_font)
+        style.map("Treeview", background=[("selected", COLORS["secondary"])], foreground=[("selected", COLORS["text"])])
+        style.configure("Treeview.Heading", font=section_font, background=COLORS["surface_alt"], foreground=COLORS["cyan"], bordercolor=COLORS["border"], padding=(8, 7))
+        style.map("Treeview.Heading", background=[("active", COLORS["secondary_pressed"])])
+        style.configure("Vertical.TScrollbar", background=COLORS["surface_alt"], troughcolor=COLORS["background"], arrowcolor=COLORS["text_muted"], bordercolor=COLORS["border"])
+        style.configure("Tech.Horizontal.TProgressbar", troughcolor=COLORS["surface_alt"], background=COLORS["primary"], lightcolor=COLORS["primary"], darkcolor=COLORS["primary"], bordercolor=COLORS["border"], thickness=8)
 
     def _build_ui(self) -> None:
         header = ttk.Frame(self, padding=(24, 16, 24, 12))
         header.pack(fill="x")
         ttk.Label(header, text="Codex Sync Desktop", style="Title.TLabel").pack(side="left")
-        self.busy_label = ttk.Label(header, text="就绪", style="Status.TLabel")
-        self.busy_label.pack(side="right")
+        status = ttk.Frame(header)
+        status.pack(side="right")
+        self.task_progress = ttk.Progressbar(status, mode="indeterminate", length=140, style="Tech.Horizontal.TProgressbar")
+        self.task_progress.pack(side="left", padx=(0, 10))
+        self.busy_label = ttk.Label(status, text="就绪", style="Status.TLabel", width=28, anchor="center")
+        self.busy_label.pack(side="left")
         shell = ttk.Frame(self, padding=(20, 0, 20, 20))
         shell.pack(fill="both", expand=True)
         sidebar = ttk.Frame(shell, style="Sidebar.TFrame", padding=(0, 18))
@@ -255,7 +276,7 @@ class CodexSyncApp(tk.Tk):
         ttk.Label(logs_header, text="运行日志", style="Section.TLabel").pack(side="left")
         ttk.Button(logs_header, text="打开日志文件", command=lambda: self._open_path(self.store.app_home / "codex-sync.log")).pack(side="right")
         self._task_button(logs_header, "一键清理日志", self.clear_logs).pack(side="right", padx=6)
-        self.log_text = tk.Text(self.maintenance_tab, wrap="word", borderwidth=1, relief="solid", font=("TkFixedFont", 10), background="#0F2927", foreground="#D1FAE5", insertbackground="#FFFFFF", padx=10, pady=10)
+        self.log_text = tk.Text(self.maintenance_tab, wrap="word", borderwidth=1, relief="solid", font=("TkFixedFont", 10), background=COLORS["surface"], foreground=COLORS["primary"], insertbackground=COLORS["primary"], highlightbackground=COLORS["border"], highlightcolor=COLORS["cyan"], padx=10, pady=10)
         self.log_text.pack(fill="both", expand=True)
 
     def _tree(self, parent: ttk.Frame, columns: tuple[str, ...], widths: tuple[int, ...]) -> ttk.Treeview:
@@ -314,6 +335,13 @@ class CodexSyncApp(tk.Tk):
         ]
         for row in rows:
             self.overview_tree.insert("", "end", values=row)
+        if (
+            self.settings.onboarding_complete
+            and not self._dependency_prompted
+            and dependency_setup_incomplete(diagnostics)
+        ):
+            self._dependency_prompted = True
+            self.after_idle(lambda: self.open_onboarding(initial_step=2))
         for label, refresh in (("来源设备", self.refresh_sources), ("备份", self.refresh_backups)):
             try:
                 refresh()
@@ -336,11 +364,12 @@ class CodexSyncApp(tk.Tk):
         content = remediation_text(diagnostics)
         dialog = tk.Toplevel(self)
         dialog.title("环境缺失项解决办法")
-        dialog.geometry("780x520")
+        dialog.configure(background=COLORS["background"])
         dialog.minsize(620, 420)
+        dialog.transient(self)
         body = ttk.Frame(dialog, padding=14)
         body.pack(fill="both", expand=True)
-        text = tk.Text(body, wrap="word", font=("TkFixedFont", 10), padx=10, pady=10)
+        text = tk.Text(body, wrap="word", font=("TkFixedFont", 10), background=COLORS["surface"], foreground=COLORS["text"], insertbackground=COLORS["primary"], highlightbackground=COLORS["border"], padx=10, pady=10)
         scrollbar = ttk.Scrollbar(body, orient="vertical", command=text.yview)
         text.configure(yscrollcommand=scrollbar.set)
         text.pack(side="left", fill="both", expand=True)
@@ -351,6 +380,9 @@ class CodexSyncApp(tk.Tk):
         buttons.pack(fill="x")
         ttk.Button(buttons, text="复制全部命令", command=lambda: self._copy_text(content)).pack(side="left")
         ttk.Button(buttons, text="关闭", command=dialog.destroy).pack(side="right")
+        center_window(dialog, self, 780, 520)
+        dialog.lift(self)
+        dialog.focus_force()
 
     def _copy_text(self, content: str) -> None:
         self.clipboard_clear()
@@ -432,12 +464,16 @@ class CodexSyncApp(tk.Tk):
         if not vault:
             messagebox.showwarning("未配置仓库", "请先选择本地同步仓库。")
             return
-        self._run_task("初始化仓库", lambda: VaultGit(vault, self.settings.vault_remote, self.settings.proxy_url).prepare(), self.refresh_all)
+        def work() -> Any:
+            self._report_progress("正在初始化或克隆同步仓库")
+            return VaultGit(vault, self.settings.vault_remote, self.settings.proxy_url).prepare()
+        self._run_task("初始化仓库", work, self.refresh_all)
 
     def pull_vault(self) -> None:
         vault = self._require_vault()
         if vault:
             def work() -> str:
+                self._report_progress("正在从 GitHub 拉取仓库")
                 result = VaultGit(vault, proxy_url=self.settings.proxy_url).pull()
                 if result.output:
                     self.logger.info("Git pull 完整输出：\n%s", result.output)
@@ -452,6 +488,7 @@ class CodexSyncApp(tk.Tk):
         self._run_task("导出并推送", lambda: self._export_and_push_work(vault), self.refresh_sources)
 
     def _export_and_push_work(self, vault: Path, force_push: bool = False) -> str:
+        self._report_progress("正在整理并导出本机活动会话")
         report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
         self.logger.info(
             "已导出 %s 个活动文字会话，移除 %s 个不再同步的旧副本和 %s 个媒体或二进制块",
@@ -460,6 +497,7 @@ class CodexSyncApp(tk.Tk):
             report.media_removed,
         )
         if force_push or self.settings.auto_push_after_export:
+            self._report_progress("正在提交并推送到 GitHub")
             result = VaultGit(vault, proxy_url=self.settings.proxy_url).commit_and_push(
                 f"sync: update {device_slug(self.settings.device_name)}"
             )
@@ -487,15 +525,19 @@ class CodexSyncApp(tk.Tk):
 
         def work() -> str:
             git = VaultGit(vault, proxy_url=self.settings.proxy_url)
+            self._report_progress("正在从 GitHub 拉取最新内容")
             self._checked_git(git.pull())
             copied = merged = titles = 0
             if should_import:
+                self._report_progress(f"正在分析来源设备 {source} 的会话")
                 plan = plan_import(self.settings.codex_path, vault, source)
                 has_changes = any(item.action in ("copy", "conflict") for item in plan.items) or bool(plan.title_updates)
                 if has_changes:
                     transaction = create_import_transaction(self.settings.codex_path, plan)
                     try:
+                        self._report_progress("正在合并会话内容")
                         result = apply_import(plan)
+                        self._report_progress("正在修复标题和侧栏索引")
                         repair_indexes(self.settings.codex_path, {}, create_backup=False, preferred_titles=plan.title_updates)
                         finish_import_transaction(transaction, result["counts"])
                         prune_backup_history(self.settings.codex_path, keep=1)
@@ -507,6 +549,7 @@ class CodexSyncApp(tk.Tk):
                     titles = len(plan.title_updates)
                 else:
                     # A previous interrupted import may have copied files before its index repair failed.
+                    self._report_progress("正在校验并修复侧栏索引")
                     repair_indexes(
                         self.settings.codex_path,
                         {},
@@ -514,7 +557,9 @@ class CodexSyncApp(tk.Tk):
                         preferred_titles=plan.title_updates,
                     )
                     prune_backup_history(self.settings.codex_path, keep=1)
+            self._report_progress("正在导出本机活动会话")
             report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
+            self._report_progress("正在提交并推送到 GitHub")
             self._checked_git(git.commit_and_push(f"sync: one-click update {local_device}"))
             return (
                 "结果：成功\n"
@@ -536,7 +581,9 @@ class CodexSyncApp(tk.Tk):
             return
         def work() -> Any:
             if self.settings.auto_pull_before_import:
+                self._report_progress("正在拉取仓库最新内容")
                 self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
+            self._report_progress(f"正在分析来源设备 {source} 的会话")
             return plan_import(self.settings.codex_path, vault, source)
         self._run_task("预览导入", work, self._show_import_plan, callback_with_result=True)
 
@@ -555,11 +602,15 @@ class CodexSyncApp(tk.Tk):
             return
         def work() -> str:
             if self.settings.auto_pull_before_import:
+                self._report_progress("正在拉取仓库最新内容")
                 self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
+            self._report_progress(f"正在分析来源设备 {source} 的会话")
             plan = plan_import(self.settings.codex_path, vault, source)
             transaction = create_import_transaction(self.settings.codex_path, plan)
             try:
+                self._report_progress("正在合并会话内容")
                 result = apply_import(plan)
+                self._report_progress("正在修复标题和侧栏索引")
                 repair = repair_indexes(self.settings.codex_path, {}, create_backup=False, preferred_titles=plan.title_updates)
                 finish_import_transaction(transaction, result["counts"])
                 prune_backup_history(self.settings.codex_path, keep=1)
@@ -590,6 +641,7 @@ class CodexSyncApp(tk.Tk):
         if not messagebox.askyesno("确认撤销", "将删除该次新增的会话，并恢复被合并的会话、数据库和侧栏索引。若导入后会话已变化，程序会拒绝撤销。是否继续？"):
             return
         def work() -> str:
+            self._report_progress("正在校验并撤销最近一次导入")
             result = rollback_import_transaction(self.settings.codex_path, transaction)
             return (
                 "结果：成功\n"
@@ -604,6 +656,7 @@ class CodexSyncApp(tk.Tk):
         if not messagebox.askyesno("确认清理", "将永久删除同步备份、旧导入备份和旧差异副本；删除后不能撤销历史导入。是否继续？"):
             return
         def work() -> str:
+            self._report_progress("正在清理历史备份")
             result = clear_backup_storage(self.settings.codex_path)
             return f"结果：成功\n删除文件：{result['files']}\n释放空间：{self._format_bytes(result['bytes'])}\n失败：0"
         self._run_task("清理备份", work, self.refresh_backups)
@@ -650,7 +703,7 @@ class CodexSyncApp(tk.Tk):
         self._busy = True
         for button in self.task_buttons:
             button.configure(state="disabled")
-        self.busy_label.configure(text=label + "...")
+        self._set_task_state(label, active=True)
         self.logger.info("开始：%s", label)
         def worker() -> None:
             try:
@@ -660,6 +713,21 @@ class CodexSyncApp(tk.Tk):
                 self.messages.put(("error", label, exc, traceback.format_exc(), error_callback))
         threading.Thread(target=worker, daemon=True).start()
 
+    def _report_progress(self, text: str) -> None:
+        self.messages.put(("progress", text))
+
+    def _set_task_state(self, text: str, *, active: bool, failed: bool = False) -> None:
+        if active:
+            self.task_progress.start(12)
+            self.busy_label.configure(text=text, style="Status.TLabel")
+        else:
+            self.task_progress.stop()
+            self.task_progress.configure(value=0)
+            self.busy_label.configure(text=text, style="Error.Status.TLabel" if failed else "Status.TLabel")
+        for window in self.winfo_children():
+            if isinstance(window, OnboardingWizard):
+                window.set_task_state(text, active=active, failed=failed)
+
     def _poll_messages(self) -> None:
         try:
             while True:
@@ -667,12 +735,14 @@ class CodexSyncApp(tk.Tk):
                 if message[0] == "log":
                     self.log_text.insert("end", message[1] + "\n")
                     self.log_text.see("end")
+                elif message[0] == "progress":
+                    self._set_task_state(str(message[1]), active=True)
                 elif message[0] == "success":
                     _, label, result, callback, callback_with_result = message
                     self._busy = False
                     for button in self.task_buttons:
                         button.configure(state="normal")
-                    self.busy_label.configure(text="就绪")
+                    self._set_task_state("就绪", active=False)
                     self.logger.info("完成：%s", label)
                     if callback:
                         callback(result) if callback_with_result else callback()
@@ -685,7 +755,7 @@ class CodexSyncApp(tk.Tk):
                     self._busy = False
                     for button in self.task_buttons:
                         button.configure(state="normal")
-                    self.busy_label.configure(text="失败")
+                    self._set_task_state("失败", active=False, failed=True)
                     self.logger.error("%s 失败：%s\n%s", label, exc, error_trace)
                     if label == "刷新检查":
                         self.overview_tree.delete(*self.overview_tree.get_children())
@@ -718,13 +788,13 @@ class CodexSyncApp(tk.Tk):
         if not self.settings.onboarding_complete:
             self.open_onboarding()
 
-    def open_onboarding(self) -> None:
+    def open_onboarding(self, initial_step: int = 0) -> None:
         existing = next((window for window in self.winfo_children() if isinstance(window, OnboardingWizard)), None)
         if existing:
-            existing.lift()
+            existing.lift(self)
             existing.focus_force()
             return
-        OnboardingWizard(self)
+        OnboardingWizard(self, initial_step=initial_step)
 
     @staticmethod
     def _format_bytes(value: int) -> str:

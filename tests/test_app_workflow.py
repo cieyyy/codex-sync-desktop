@@ -42,6 +42,7 @@ class FirstRunWorkflowTests(TestCase):
             _require_vault=lambda: Path("vault"),
             _checked_git=Mock(),
             refresh_all=Mock(),
+            _report_progress=Mock(),
         )
         fake_app._run_task = lambda _label, work, _callback: work()
 
@@ -69,6 +70,7 @@ class FirstRunWorkflowTests(TestCase):
             ),
             logger=Mock(),
             _checked_git=Mock(),
+            _report_progress=Mock(),
         )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -92,6 +94,7 @@ class FirstRunWorkflowTests(TestCase):
             ),
             logger=Mock(),
             _checked_git=Mock(),
+            _report_progress=Mock(),
         )
 
         with tempfile.TemporaryDirectory() as directory:
