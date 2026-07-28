@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, Iterator, Mapping
 from .config import device_slug
 from .models import ExportReport, ImportItem, ImportPlan
 from .redaction import sanitize_record
-from .titles import read_thread_titles
+from .titles import is_usable_title, read_thread_titles
 
 
 def iter_session_files(codex_home: Path) -> Iterator[tuple[str, Path]]:
@@ -75,7 +75,7 @@ def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -
             "sha256": result["sha256"],
             "bytes": result["bytes"],
         }
-        if titles.get(task_id):
+        if is_usable_title(titles.get(task_id, "")):
             entry["title"] = titles[task_id]
         manifest_sessions.append(entry)
 
@@ -131,6 +131,8 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
             continue
         task_id = str(entry.get("task_id") or "").strip()
         source_title = str(entry.get("title") or "").strip()[:500]
+        if not is_usable_title(source_title):
+            source_title = ""
         if task_id and source_title and local_titles.get(task_id) != source_title:
             plan.title_updates[task_id] = source_title
         if not destination.exists():

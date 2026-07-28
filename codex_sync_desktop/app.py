@@ -507,7 +507,12 @@ class CodexSyncApp(tk.Tk):
                     titles = len(plan.title_updates)
                 else:
                     # A previous interrupted import may have copied files before its index repair failed.
-                    repair_indexes(self.settings.codex_path, {}, create_backup=True)
+                    repair_indexes(
+                        self.settings.codex_path,
+                        {},
+                        create_backup=True,
+                        preferred_titles=plan.title_updates,
+                    )
                     prune_backup_history(self.settings.codex_path, keep=1)
             report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
             self._checked_git(git.commit_and_push(f"sync: one-click update {local_device}"))

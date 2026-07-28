@@ -133,6 +133,39 @@ class IndexRepairTests(unittest.TestCase):
             index = [json.loads(line) for line in (codex_home / "session_index.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual(len([item for item in index if item["id"] == session_id]), 1)
 
+    def test_injected_context_is_never_used_as_title(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            database = create_state_database(codex_home)
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            session = write_session(codex_home, session_id, "Real deployment request", "Done")
+            records = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
+            records.insert(1, {
+                "timestamp": "2026-07-25T10:00:00.100Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "# AGENTS.md instructions\n<INSTRUCTIONS>system rules</INSTRUCTIONS>"},
+                        {"type": "input_text", "text": "<environment_context><cwd>D:\\project</cwd></environment_context>"},
+                    ],
+                },
+            })
+            session.write_text("".join(json.dumps(item) + "\n" for item in records), encoding="utf-8")
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute(
+                    "INSERT INTO threads (id,rollout_path,created_at,updated_at,source,model_provider,cwd,title,sandbox_policy,approval_mode) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (session_id, "old", 1, 1, "app", "openai", "/old", "AGENTS.md instructions system rules", "{}", "never"),
+                )
+                connection.commit()
+
+            repair_indexes(codex_home, create_backup=False)
+
+            with closing(sqlite3.connect(database)) as connection:
+                title = connection.execute("SELECT title FROM threads WHERE id=?", (session_id,)).fetchone()[0]
+            self.assertEqual(title, "Real deployment request")
+
 
 if __name__ == "__main__":
     unittest.main()

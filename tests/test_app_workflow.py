@@ -47,7 +47,12 @@ class FirstRunWorkflowTests(TestCase):
 
         CodexSyncApp.sync_once(fake_app)
 
-        mocked_repair.assert_called_once_with(Path("codex-home"), {}, create_backup=True)
+        mocked_repair.assert_called_once_with(
+            Path("codex-home"),
+            {},
+            create_backup=True,
+            preferred_titles={},
+        )
         mocked_prune.assert_called_once_with(Path("codex-home"), keep=1)
 
     @patch("codex_sync_desktop.app.VaultGit")

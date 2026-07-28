@@ -11,6 +11,7 @@ from .backups import create_consistent_backup, find_state_databases, select_stat
 from .models import RepairReport, SessionInfo
 from .pathmap import map_path
 from .sessions import iter_session_files
+from .titles import is_usable_title, title_candidate
 
 
 def parse_session(path: Path, codex_home: Path, mappings: Mapping[str, str] | None = None) -> SessionInfo | None:
@@ -31,7 +32,7 @@ def parse_session(path: Path, codex_home: Path, mappings: Mapping[str, str] | No
                 if item.get("type") == "session_meta" and not metadata:
                     metadata = payload
                 if not first_user:
-                    first_user = _extract_user_text(item)
+                    first_user = title_candidate(_extract_user_text(item))
     except OSError:
         return None
     session_id = str(metadata.get("id") or metadata.get("session_id") or "")
@@ -91,9 +92,17 @@ def repair_indexes(
     existing_names = _read_existing_names(codex_home / "session_index.jsonl")
     with closing(sqlite3.connect(str(database))) as connection:
         connection.row_factory = sqlite3.Row
-        db_names = {row["id"]: row["title"] for row in connection.execute("SELECT id, title FROM threads")}
+        db_names = {
+            row["id"]: row["title"]
+            for row in connection.execute("SELECT id, title FROM threads")
+            if is_usable_title(str(row["title"] or ""))
+        }
         existing_names.update({key: value for key, value in db_names.items() if value})
-        imported_names = {str(key): str(value).strip() for key, value in (preferred_titles or {}).items() if str(value).strip()}
+        imported_names = {
+            str(key): str(value).strip()
+            for key, value in (preferred_titles or {}).items()
+            if is_usable_title(str(value))
+        }
         resolved_names: Dict[str, str] = {}
         columns = {row[1] for row in connection.execute("PRAGMA table_info(threads)")}
         for session in sessions:
@@ -217,7 +226,7 @@ def _read_existing_names(path: Path) -> Dict[str, str]:
             item = json.loads(line)
         except ValueError:
             continue
-        if item.get("id") and item.get("thread_name"):
+        if item.get("id") and is_usable_title(str(item.get("thread_name") or "")):
             result[str(item["id"])] = str(item["thread_name"])
     return result
 
