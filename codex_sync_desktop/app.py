@@ -897,6 +897,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--smoke-ui", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smoke-onboarding", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smoke-import-preview", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-taskbar", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -918,6 +919,19 @@ def main() -> None:
         )
     configure_windows_app_identity()
     app = CodexSyncApp(store)
+    if args.smoke_taskbar:
+        if os.name != "nt":
+            print("taskbar-smoke-skipped (non-Windows)")
+            app.destroy()
+            return
+        app.after(220, app.quit)
+        app.mainloop()
+        if not app.chrome.is_taskbar_registered():
+            app.destroy()
+            raise RuntimeError("Packaged Windows app was not registered as a taskbar window")
+        print("taskbar-smoke-ok")
+        app.destroy()
+        return
     if args.smoke_onboarding:
         app.withdraw()
         wizard = OnboardingWizard(app)

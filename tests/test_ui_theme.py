@@ -8,7 +8,18 @@ from unittest.mock import Mock, patch
 
 from codex_sync_desktop.app import CodexSyncApp, dependency_setup_incomplete
 from codex_sync_desktop.ui_theme import centered_geometry
-from codex_sync_desktop.window_chrome import APP_USER_MODEL_ID, WindowChrome, bundled_asset_path, configure_windows_app_identity
+from codex_sync_desktop.window_chrome import (
+    APP_USER_MODEL_ID,
+    GWL_EXSTYLE,
+    GWLP_HWNDPARENT,
+    GW_OWNER,
+    TASKBAR_REFRESH_FLAGS,
+    WS_EX_APPWINDOW,
+    WS_EX_TOOLWINDOW,
+    WindowChrome,
+    bundled_asset_path,
+    configure_windows_app_identity,
+)
 
 
 class WindowPlacementTests(TestCase):
@@ -69,3 +80,48 @@ class WindowsChromeTests(TestCase):
     def test_bundled_asset_path_uses_pyinstaller_root(self):
         with patch("codex_sync_desktop.window_chrome.sys._MEIPASS", "C:/bundle", create=True):
             self.assertEqual(bundled_asset_path("icon.ico"), Path("C:/bundle/assets/icon.ico"))
+
+    @patch("codex_sync_desktop.window_chrome.ctypes.windll", create=True)
+    def test_taskbar_repair_clears_tool_window_owner_and_refreshes_frame(self, mocked_windll):
+        user32 = mocked_windll.user32
+        user32.GetWindowLongPtrW.return_value = WS_EX_TOOLWINDOW
+        user32.SetWindowPos.return_value = 1
+        user32.GetWindow.return_value = 0
+        chrome = SimpleNamespace(
+            title="Codex Sync Desktop  0.7.1",
+            _native_window_handle=Mock(return_value=456),
+            _set_native_icon=Mock(return_value=True),
+        )
+        chrome.is_taskbar_registered = Mock(return_value=True)
+
+        result = WindowChrome._repair_taskbar_window(chrome)
+
+        self.assertTrue(result)
+        user32.SetWindowLongPtrW.assert_any_call(456, GWL_EXSTYLE, WS_EX_APPWINDOW)
+        user32.SetWindowLongPtrW.assert_any_call(456, GWLP_HWNDPARENT, 0)
+        user32.SetWindowTextW.assert_called_once_with(456, "Codex Sync Desktop  0.7.1")
+        user32.SetWindowPos.assert_called_once_with(456, 0, 0, 0, 0, 0, TASKBAR_REFRESH_FLAGS)
+        chrome._set_native_icon.assert_called_once_with(456)
+
+    @patch("codex_sync_desktop.window_chrome.ctypes.windll", create=True)
+    def test_taskbar_registration_requires_appwindow_without_owner(self, mocked_windll):
+        user32 = mocked_windll.user32
+        user32.GetWindowLongPtrW.return_value = WS_EX_APPWINDOW
+        user32.GetWindow.return_value = 0
+        chrome = SimpleNamespace(enabled=True, _native_window_handle=Mock(return_value=456))
+
+        self.assertTrue(WindowChrome.is_taskbar_registered(chrome))
+        user32.GetWindow.assert_called_once_with(456, GW_OWNER)
+
+    @patch("codex_sync_desktop.window_chrome.ctypes.windll", create=True)
+    def test_taskbar_registration_rejects_tool_window_or_owner(self, mocked_windll):
+        user32 = mocked_windll.user32
+        chrome = SimpleNamespace(enabled=True, _native_window_handle=Mock(return_value=456))
+
+        user32.GetWindowLongPtrW.return_value = WS_EX_APPWINDOW | WS_EX_TOOLWINDOW
+        user32.GetWindow.return_value = 0
+        self.assertFalse(WindowChrome.is_taskbar_registered(chrome))
+
+        user32.GetWindowLongPtrW.return_value = WS_EX_APPWINDOW
+        user32.GetWindow.return_value = 999
+        self.assertFalse(WindowChrome.is_taskbar_registered(chrome))

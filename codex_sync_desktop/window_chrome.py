@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import sys
 import tkinter as tk
@@ -13,6 +14,19 @@ from .ui_theme import COLORS
 
 TITLEBAR_HEIGHT = 42
 APP_USER_MODEL_ID = "cieyyy.CodexSyncDesktop"
+GWL_EXSTYLE = -20
+GWLP_HWNDPARENT = -8
+GW_OWNER = 4
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_APPWINDOW = 0x00040000
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+SWP_FRAMECHANGED = 0x0020
+TASKBAR_REFRESH_FLAGS = SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+
+LOGGER = logging.getLogger("codex_sync_desktop")
 
 
 def bundled_asset_path(name: str) -> Path:
@@ -141,10 +155,13 @@ class WindowChrome:
 
     def __init__(self, window: tk.Tk, title: str, close_command: Callable[[], None]) -> None:
         self.window = window
+        self.title = title
         self.drag_point: DragPoint | None = None
         self.normal_geometry = ""
         self.maximized = False
         self.enabled = os.name == "nt"
+        self._taskbar_refresh_pending = False
+        self._taskbar_registered = False
 
         if self.enabled:
             window.overrideredirect(True)
@@ -193,6 +210,7 @@ class WindowChrome:
                 widget.bind("<B1-Motion>", self._drag)
                 widget.bind("<Double-Button-1>", lambda _event: self.toggle_maximize())
 
+            self.window.bind("<Map>", self._schedule_taskbar_refresh, add="+")
             self.window.after_idle(self._show_in_taskbar)
 
         self.body = tk.Frame(self.frame, background=COLORS["background"], borderwidth=0)
@@ -201,23 +219,92 @@ class WindowChrome:
     def _show_in_taskbar(self) -> None:
         if not self.enabled:
             return
+        self._taskbar_refresh_pending = False
         try:
-            hwnd = self._native_window_handle()
-            user32 = ctypes.windll.user32
-            get_window_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
-            set_window_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
-            get_window_long.argtypes = (ctypes.c_void_p, ctypes.c_int)
-            get_window_long.restype = ctypes.c_ssize_t
-            set_window_long.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t)
-            set_window_long.restype = ctypes.c_ssize_t
-            extended_style = get_window_long(hwnd, -20)
-            extended_style = (extended_style & ~0x00000080) | 0x00040000
-            set_window_long(hwnd, -20, extended_style)
-            self._set_native_icon(hwnd)
+            self.window.update_idletasks()
+            self._taskbar_registered = self._repair_taskbar_window()
             self.window.withdraw()
-            self.window.after(10, self.window.deiconify)
-        except (AttributeError, OSError):
-            pass
+            self.window.after(16, self._restore_taskbar_window)
+        except (AttributeError, OSError, tk.TclError):
+            LOGGER.warning("Windows taskbar registration failed", exc_info=True)
+
+    def _restore_taskbar_window(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            self.window.deiconify()
+            self.window.update_idletasks()
+            self._taskbar_registered = self._repair_taskbar_window()
+            self.window.after(80, self._repair_after_map)
+        except (AttributeError, OSError, tk.TclError):
+            LOGGER.warning("Windows taskbar restore failed", exc_info=True)
+
+    def _schedule_taskbar_refresh(self, _event: tk.Event | None = None) -> None:
+        if not self.enabled or self._taskbar_refresh_pending:
+            return
+        self._taskbar_refresh_pending = True
+        self.window.after(40, self._repair_after_map)
+
+    def _repair_after_map(self) -> None:
+        self._taskbar_refresh_pending = False
+        if not self.enabled:
+            return
+        try:
+            self._taskbar_registered = self._repair_taskbar_window()
+        except (AttributeError, OSError, tk.TclError):
+            LOGGER.warning("Windows taskbar refresh failed", exc_info=True)
+
+    def _repair_taskbar_window(self) -> bool:
+        """Register the borderless Tk wrapper as a normal Windows application window."""
+        hwnd = self._native_window_handle()
+        user32 = ctypes.windll.user32
+        get_window_long = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+        set_window_long = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        get_window_long.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        get_window_long.restype = ctypes.c_ssize_t
+        set_window_long.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t)
+        set_window_long.restype = ctypes.c_ssize_t
+
+        extended_style = get_window_long(hwnd, GWL_EXSTYLE)
+        desired_style = (extended_style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
+        set_window_long(hwnd, GWL_EXSTYLE, desired_style)
+        set_window_long(hwnd, GWLP_HWNDPARENT, 0)
+
+        set_window_text = user32.SetWindowTextW
+        set_window_text.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p)
+        set_window_text.restype = ctypes.c_int
+        set_window_text(hwnd, self.title)
+
+        set_window_pos = user32.SetWindowPos
+        set_window_pos.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint,
+        )
+        set_window_pos.restype = ctypes.c_int
+        frame_refreshed = bool(set_window_pos(hwnd, 0, 0, 0, 0, 0, TASKBAR_REFRESH_FLAGS))
+        icon_set = self._set_native_icon(hwnd)
+        return frame_refreshed and icon_set and self.is_taskbar_registered()
+
+    def is_taskbar_registered(self) -> bool:
+        if not self.enabled:
+            return True
+        hwnd = self._native_window_handle()
+        user32 = ctypes.windll.user32
+        get_window_long = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+        get_window_long.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        get_window_long.restype = ctypes.c_ssize_t
+        extended_style = get_window_long(hwnd, GWL_EXSTYLE)
+
+        get_window = user32.GetWindow
+        get_window.argtypes = (ctypes.c_void_p, ctypes.c_uint)
+        get_window.restype = ctypes.c_void_p
+        owner = get_window(hwnd, GW_OWNER)
+        return bool(extended_style & WS_EX_APPWINDOW) and not bool(extended_style & WS_EX_TOOLWINDOW) and not owner
 
     def _native_window_handle(self) -> int:
         user32 = ctypes.windll.user32

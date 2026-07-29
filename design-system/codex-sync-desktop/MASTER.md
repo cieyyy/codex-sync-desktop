@@ -253,3 +253,10 @@ Before delivering any UI code, verify:
 - Conflict previews expose source, local, and merged versions without allowing raw JSONL edits.
 - The final title is the only editable field. Validation happens on blur, invalid titles show an inline recovery message, and valid changes remain pending until import.
 - The modal preserves keyboard escape, Enter navigation, and Ctrl+S while keeping visible focus and high-contrast dark surfaces.
+
+## Windows Taskbar v0.7.1
+
+- Keep the dark borderless application chrome while registering its native Tk wrapper as a normal Windows application window.
+- Apply the stable AppUserModelID, packaged icon, native title, `WS_EX_APPWINDOW`, and ownerless state after every map or restore event.
+- Force a native frame refresh after changing extended styles so taskbar and Alt+Tab state update immediately.
+- Packaged Windows builds must pass a taskbar-registration smoke test before an installer can be released.
