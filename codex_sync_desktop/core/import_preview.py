@@ -1,16 +1,33 @@
 from __future__ import annotations
 
+import io
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from .models import ImportItem, ImportPlan
 from .titles import is_usable_title
 
 
-PREVIEW_MAX_BYTES = 512 * 1024
-PREVIEW_MAX_RECORDS = 240
 FAILURE_ACTIONS = ("missing-source", "invalid-source-hash")
+
+
+@dataclass(frozen=True)
+class PreviewSource:
+    label: str
+    path: Path | None = None
+    content: bytes | None = None
+    plain_text: str = ""
+
+    def iter_records(self) -> Iterator[str]:
+        if self.path is not None:
+            yield from iter_session_path(self.path)
+            return
+        if self.content is not None:
+            yield from iter_session_bytes(self.content)
+            return
+        yield self.plain_text or "没有可显示的文字记录。"
 
 
 def items_for_category(plan: ImportPlan, category: str) -> list[ImportItem]:
@@ -44,37 +61,49 @@ def apply_title_overrides(plan: ImportPlan, overrides: Mapping[str, str]) -> int
     return applied
 
 
-def preview_versions(item: ImportItem) -> list[tuple[str, str]]:
-    versions: list[tuple[str, str]] = []
+def preview_sources(item: ImportItem) -> list[PreviewSource]:
+    versions: list[PreviewSource] = []
     if item.source.is_file():
-        versions.append(("来源设备", render_session_path(item.source)))
+        versions.append(PreviewSource("来源设备", path=item.source))
     if item.destination.is_file():
-        versions.append(("本机", render_session_path(item.destination)))
+        versions.append(PreviewSource("本机", path=item.destination))
     if item.merged_content is not None:
-        versions.append(("合并后", render_session_bytes(item.merged_content)))
+        versions.append(PreviewSource("合并后", content=item.merged_content))
     if not versions:
         reason = item.detail or "文件不存在，无法读取内容。"
-        versions.append(("详情", f"无法预览会话内容。\n\n原因：{reason}"))
+        versions.append(PreviewSource("详情", plain_text=f"无法预览会话内容。\n\n原因：{reason}"))
     return versions
 
 
+def preview_versions(item: ImportItem) -> list[tuple[str, str]]:
+    """Render every version completely for non-UI callers and tests."""
+    return [(source.label, "\n\n".join(source.iter_records())) for source in preview_sources(item)]
+
+
 def render_session_path(path: Path) -> str:
+    return "\n\n".join(iter_session_path(path))
+
+
+def render_session_bytes(content: bytes) -> str:
+    return "\n\n".join(iter_session_bytes(content))
+
+
+def iter_session_path(path: Path) -> Iterator[str]:
     try:
-        with path.open("rb") as handle:
-            raw = handle.read(PREVIEW_MAX_BYTES + 1)
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            yield from _iter_rendered_lines(handle)
     except OSError as exc:
-        return f"无法读取文件。\n\n原因：{exc}"
-    truncated = len(raw) > PREVIEW_MAX_BYTES
-    return render_session_bytes(raw[:PREVIEW_MAX_BYTES], truncated=truncated)
+        yield f"无法读取文件。\n\n原因：{exc}"
 
 
-def render_session_bytes(content: bytes, *, truncated: bool = False) -> str:
-    rendered: list[str] = []
-    records = 0
-    for raw_line in content.decode("utf-8", errors="replace").splitlines():
-        if records >= PREVIEW_MAX_RECORDS:
-            truncated = True
-            break
+def iter_session_bytes(content: bytes) -> Iterator[str]:
+    with io.StringIO(content.decode("utf-8", errors="replace")) as handle:
+        yield from _iter_rendered_lines(handle)
+
+
+def _iter_rendered_lines(lines: Iterable[str]) -> Iterator[str]:
+    rendered = False
+    for raw_line in lines:
         try:
             item = json.loads(raw_line)
         except ValueError:
@@ -84,13 +113,10 @@ def render_session_bytes(content: bytes, *, truncated: bool = False) -> str:
         record = _render_record(item)
         if not record:
             continue
-        rendered.append(record)
-        records += 1
+        rendered = True
+        yield record
     if not rendered:
-        rendered.append("没有可显示的文字记录。")
-    if truncated:
-        rendered.append("\n—— 预览已截断；正式导入仍会处理完整文件 ——")
-    return "\n\n".join(rendered)
+        yield "没有可显示的文字记录。"
 
 
 def _render_record(item: Mapping[str, Any]) -> str:

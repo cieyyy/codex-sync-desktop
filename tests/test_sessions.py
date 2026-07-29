@@ -15,6 +15,7 @@ from codex_sync_desktop.core.backups import (
 from codex_sync_desktop.core.import_preview import (
     apply_title_overrides,
     items_for_category,
+    preview_sources,
     preview_versions,
     render_session_bytes,
 )
@@ -167,6 +168,46 @@ class SessionSyncTests(unittest.TestCase):
         self.assertIn("助手", preview)
         self.assertIn("Answer", preview)
         self.assertIn("命令 / 工具调用：shell", preview)
+
+    def test_preview_renders_every_record_beyond_previous_limits(self):
+        records = [
+            {
+                "timestamp": f"2026-07-25T10:{index // 60:02d}:{index % 60:02d}Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": f"record-{index:03d}-" + ("x" * 4096),
+                },
+            }
+            for index in range(320)
+        ]
+        content = "".join(json.dumps(record) + "\n" for record in records).encode("utf-8")
+
+        preview = render_session_bytes(content)
+
+        self.assertGreater(len(content), 512 * 1024)
+        self.assertIn("record-000-", preview)
+        self.assertIn("record-319-", preview)
+        self.assertNotIn("预览已截断", preview)
+
+    def test_preview_source_streams_the_selected_version_to_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            records = [
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": f"answer-{index:03d}"},
+                }
+                for index in range(300)
+            ]
+            path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+            item = ImportItem("copy", "sessions/session.jsonl", path, Path(directory) / "missing")
+
+            sources = preview_sources(item)
+            rendered = list(sources[0].iter_records())
+
+            self.assertEqual(len(rendered), 300)
+            self.assertIn("answer-299", rendered[-1])
 
     def test_raw_destination_is_identical_to_its_sanitized_export(self):
         with tempfile.TemporaryDirectory() as directory:

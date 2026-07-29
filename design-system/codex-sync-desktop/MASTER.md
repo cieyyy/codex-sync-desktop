@@ -260,3 +260,10 @@ Before delivering any UI code, verify:
 - Apply the stable AppUserModelID, packaged icon, native title, `WS_EX_APPWINDOW`, and ownerless state after every map or restore event.
 - Force a native frame refresh after changing extended styles so taskbar and Alt+Tab state update immediately.
 - Packaged Windows builds must pass a taskbar-registration smoke test before an installer can be released.
+
+## Full Import Preview
+
+- Never truncate a selected conversation preview; every renderable record must remain reachable by scrolling.
+- Load only the currently selected source, local, or merged version instead of eagerly rendering all versions.
+- Append records in bounded idle-time batches and show loading/completion feedback beside the preview heading.
+- Cancel the previous iterator immediately when the user switches sessions, versions, or closes the dialog.

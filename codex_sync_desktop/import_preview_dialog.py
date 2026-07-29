@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import Callable, Mapping
+from typing import Callable, Iterator, Mapping
 
-from .core.import_preview import items_for_category, normalize_title, preview_versions
+from .core.import_preview import PreviewSource, items_for_category, normalize_title, preview_sources
 from .core.models import ImportItem, ImportPlan
 from .ui_theme import COLORS, center_window
 
@@ -35,7 +35,10 @@ class ImportPreviewDialog(tk.Toplevel):
         self.on_title_saved = on_title_saved
         self.current_item: ImportItem | None = None
         self.current_item_iid = ""
-        self.current_versions: dict[str, str] = {}
+        self.current_versions: dict[str, PreviewSource] = {}
+        self.preview_iterator: Iterator[str] | None = None
+        self.preview_generation = 0
+        self.preview_record_count = 0
         self._loading_item = False
 
         title = CATEGORY_TITLES.get(category, "导入详情")
@@ -133,6 +136,8 @@ class ImportPreviewDialog(tk.Toplevel):
         preview_header = ttk.Frame(right, style="Panel.TFrame")
         preview_header.grid(row=4, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(preview_header, text="文字内容预览", style="PanelSection.TLabel").pack(side="left")
+        self.preview_status = ttk.Label(preview_header, text="", style="PanelMuted.TLabel")
+        self.preview_status.pack(side="left", padx=(10, 0))
         ttk.Label(preview_header, text="版本", style="PanelMuted.TLabel").pack(side="right", padx=(8, 0))
         self.version_var = tk.StringVar()
         self.version_combo = ttk.Combobox(
@@ -219,20 +224,59 @@ class ImportPreviewDialog(tk.Toplevel):
                 f"说明：{detail}"
             )
         )
-        versions = preview_versions(item)
-        self.current_versions = dict(versions)
-        labels = [label for label, _content in versions]
+        versions = preview_sources(item)
+        self.current_versions = {source.label: source for source in versions}
+        labels = [source.label for source in versions]
         self.version_combo["values"] = labels
         self.version_var.set(labels[0])
         self._show_version()
 
     def _show_version(self) -> None:
-        content = self.current_versions.get(self.version_var.get(), "没有可显示的文字记录。")
+        source = self.current_versions.get(self.version_var.get())
+        self._cancel_preview_loading()
+        self.preview_generation += 1
+        generation = self.preview_generation
+        self.preview_record_count = 0
         self.preview_text.configure(state="normal")
         self.preview_text.delete("1.0", "end")
-        self.preview_text.insert("1.0", content)
-        self.preview_text.configure(state="disabled")
         self.preview_text.yview_moveto(0)
+        if source is None:
+            self.preview_text.insert("1.0", "没有可显示的文字记录。")
+            self.preview_text.configure(state="disabled")
+            self.preview_status.configure(text="加载失败")
+            return
+        self.preview_iterator = source.iter_records()
+        self.preview_status.configure(text="正在加载完整预览…")
+        self._append_preview_batch(generation)
+
+    def _append_preview_batch(self, generation: int) -> None:
+        if generation != self.preview_generation or self.preview_iterator is None:
+            return
+        appended = 0
+        appended_bytes = 0
+        try:
+            while appended < 40 and appended_bytes < 128 * 1024:
+                record = next(self.preview_iterator)
+                if self.preview_record_count:
+                    self.preview_text.insert("end", "\n\n")
+                self.preview_text.insert("end", record)
+                self.preview_record_count += 1
+                appended += 1
+                appended_bytes += len(record.encode("utf-8", errors="replace"))
+        except StopIteration:
+            self.preview_iterator = None
+            self.preview_text.configure(state="disabled")
+            self.preview_status.configure(text=f"完整预览 · {self.preview_record_count} 条")
+            return
+        self.after(1, lambda: self._append_preview_batch(generation))
+
+    def _cancel_preview_loading(self) -> None:
+        iterator = self.preview_iterator
+        self.preview_iterator = None
+        if iterator is not None:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
 
     def _validate_title(self) -> bool:
         if self._loading_item or not self.current_item or not self.current_item.task_id:
@@ -275,5 +319,7 @@ class ImportPreviewDialog(tk.Toplevel):
                 if messagebox.askyesno("保存标题修改", "当前标题尚未保存，是否保存后关闭？", parent=self):
                     if not self._commit_title(show_feedback=True):
                         return
+        self._cancel_preview_loading()
+        self.preview_generation += 1
         self.grab_release()
         self.destroy()
