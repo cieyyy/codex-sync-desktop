@@ -12,6 +12,7 @@ class RunningProcessesTests(TestCase):
         mocked_run.return_value = SimpleNamespace(stdout=None, returncode=0)
 
         self.assertEqual(running_codex_processes(), [])
+        self.assertIn("creationflags", mocked_run.call_args.kwargs)
 
     @patch("codex_sync_desktop.core.processes.subprocess.run")
     @patch("codex_sync_desktop.core.processes.platform.system", return_value="Windows")

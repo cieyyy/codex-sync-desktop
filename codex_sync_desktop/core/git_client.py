@@ -92,6 +92,21 @@ TRANSIENT_PUSH_MARKERS = (
 )
 
 
+def hidden_window_kwargs(platform_name: str | None = None) -> dict[str, object]:
+    """Return subprocess options that prevent console flashes on Windows."""
+    selected_platform = platform_name or sys.platform
+    if selected_platform != "win32":
+        return {}
+    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    startupinfo_type = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_type is None:
+        return {"creationflags": creationflags}
+    startupinfo = startupinfo_type()
+    startupinfo.dwFlags |= int(getattr(subprocess, "STARTF_USESHOWWINDOW", 0))
+    startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0))
+    return {"creationflags": creationflags, "startupinfo": startupinfo}
+
+
 @dataclass
 class CommandResult:
     ok: bool
@@ -177,6 +192,7 @@ def run(command: Sequence[str], cwd: Path | None = None, timeout: int = 120, pro
         result = subprocess.run(
             list(command), cwd=str(cwd) if cwd else None, capture_output=True,
             text=True, timeout=timeout, check=False, env=command_environment(proxy_url=proxy_url),
+            **hidden_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return CommandResult(False, str(exc), 1)

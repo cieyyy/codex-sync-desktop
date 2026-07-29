@@ -15,6 +15,7 @@ from codex_sync_desktop.core.onboarding import (
     github_setup_status,
     install_windows_portable_gh,
     launch_dependency_install,
+    launch_github_login,
     select_macos_gh_installer_asset,
     select_windows_gh_portable_asset,
     select_windows_git_installer_asset,
@@ -60,6 +61,21 @@ class ProxyValidationTests(TestCase):
 
         mocked_context.assert_called_once_with(cafile="trusted-ca.pem")
         self.assertEqual(len(handlers), 2)
+
+    @patch("codex_sync_desktop.core.onboarding.subprocess.Popen")
+    @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=r"C:\Tools\gh.exe")
+    @patch("codex_sync_desktop.core.onboarding.run", return_value=CommandResult(True, "gh version", 0))
+    @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
+    def test_windows_github_login_runs_hidden_without_powershell(self, _run, _which, mocked_popen):
+        with tempfile.TemporaryDirectory() as directory:
+            launch_github_login(Path(directory), "http://127.0.0.1:7890")
+
+        command = mocked_popen.call_args.args[0]
+        self.assertEqual(command[0], r"C:\Tools\gh.exe")
+        self.assertIn("--web", command)
+        self.assertIn("--clipboard", command)
+        self.assertIn("--skip-ssh-key", command)
+        self.assertIn("creationflags", mocked_popen.call_args.kwargs)
 
 
 class PrivateRepositorySetupTests(TestCase):
@@ -274,6 +290,10 @@ class DependencyInstallFallbackTests(TestCase):
         mocked_download.assert_called_once_with(Path(directory), "")
         mocked_script.assert_called_once_with(Path(directory), Path("git.exe"), "")
         mocked_popen.assert_called_once()
+        command = mocked_popen.call_args.args[0]
+        self.assertIn("-NonInteractive", command)
+        self.assertNotIn("-NoExit", command)
+        self.assertIn("creationflags", mocked_popen.call_args.kwargs)
 
     @patch("codex_sync_desktop.core.onboarding.clear_tool_installer_cache")
     @patch("codex_sync_desktop.core.onboarding.install_windows_portable_gh", return_value=Path("portable-gh.exe"))

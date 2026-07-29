@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import socket
 import ssl
@@ -18,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .git_client import CommandResult, command_environment, github_auth_status, run
+from .git_client import CommandResult, command_environment, github_auth_status, hidden_window_kwargs, run
 
 
 GITHUB_SIGNUP_URL = "https://github.com/signup"
@@ -155,6 +154,7 @@ def _macos_proxy_candidates() -> list[str]:
             text=True,
             timeout=5,
             check=False,
+            **hidden_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -205,34 +205,62 @@ def launch_github_login(app_home: Path, proxy_url: str = "") -> Path | None:
         raise FileNotFoundError(f"GitHub CLI 未安装或已损坏：{detail}。请点击“自动安装/修复必要工具”")
     app_home.mkdir(parents=True, exist_ok=True)
     if sys.platform == "win32":
-        escaped_gh = gh_path.replace("'", "''")
-        prefix = ""
-        if proxy:
-            escaped_proxy = proxy.replace("'", "''")
-            prefix = f"$env:HTTP_PROXY='{escaped_proxy}'; $env:HTTPS_PROXY='{escaped_proxy}'; "
-        command = (
-            f"{prefix}& '{escaped_gh}' auth login --hostname github.com --git-protocol https --web; "
-            f"if ($LASTEXITCODE -eq 0) {{ & '{escaped_gh}' auth setup-git; Write-Host '登录成功，可以关闭此窗口。' -ForegroundColor Green }}"
+        subprocess.Popen(
+            [
+                gh_path,
+                "auth",
+                "login",
+                "--hostname",
+                "github.com",
+                "--git-protocol",
+                "https",
+                "--web",
+                "--clipboard",
+                "--skip-ssh-key",
+            ],
+            env=command_environment(proxy_url=proxy),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **hidden_window_kwargs("win32"),
         )
-        subprocess.Popen(["powershell.exe", "-NoExit", "-Command", command])
         return None
     if sys.platform == "darwin":
-        script = app_home / "github-login.command"
-        exports = ""
-        if proxy:
-            quoted = shlex.quote(proxy)
-            exports = f"export HTTP_PROXY={quoted}\nexport HTTPS_PROXY={quoted}\n"
-        content = (
-            "#!/bin/sh\n"
-            f"{exports}{shlex.quote(gh_path)} auth login --hostname github.com --git-protocol https --web\n"
-            f"status=$?\nif [ $status -eq 0 ]; then {shlex.quote(gh_path)} auth setup-git; echo '登录成功，可以关闭此窗口。'; fi\n"
-            "printf '按回车关闭...'; read answer\nexit $status\n"
+        subprocess.Popen(
+            [
+                gh_path,
+                "auth",
+                "login",
+                "--hostname",
+                "github.com",
+                "--git-protocol",
+                "https",
+                "--web",
+                "--clipboard",
+                "--skip-ssh-key",
+            ],
+            env=command_environment(proxy_url=proxy),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        script.write_text(content, encoding="utf-8")
-        script.chmod(0o700)
-        subprocess.Popen(["open", str(script)])
-        return script
-    subprocess.Popen([gh_path, "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"], env=command_environment(proxy_url=proxy))
+        return None
+    subprocess.Popen(
+        [
+            gh_path,
+            "auth",
+            "login",
+            "--hostname",
+            "github.com",
+            "--git-protocol",
+            "https",
+            "--web",
+            "--clipboard",
+            "--skip-ssh-key",
+        ],
+        env=command_environment(proxy_url=proxy),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **hidden_window_kwargs(),
+    )
     return None
 
 
@@ -275,7 +303,12 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Dependency
             raise RuntimeError("必要工具安装状态异常，请重新检测后重试")
         git_installer = download_latest_windows_git_installer(app_home, proxy)
         script = write_windows_tool_install_script(app_home, git_installer, proxy)
-        subprocess.Popen(["powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", str(script)])
+        subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **hidden_window_kwargs("win32"),
+        )
         fallback_note = "；winget 未成功，已切换官方安装包" if winget_failures else ""
         return DependencyInstallResult(False, f"GitHub CLI 已自动准备完成；Git 官方安装程序已打开{fallback_note}。按系统提示授权，软件会自动检测安装结果。")
     if sys.platform == "darwin":

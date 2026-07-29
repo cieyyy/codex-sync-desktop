@@ -33,6 +33,7 @@ from .core.onboarding import validate_proxy_url
 from .core.processes import running_codex_processes
 from .core.sessions import apply_import, export_sanitized_sessions, list_source_devices, plan_import
 from .ui_theme import COLORS, center_window
+from .window_chrome import WindowChrome
 from .wizard import OnboardingWizard
 
 
@@ -66,6 +67,7 @@ class CodexSyncApp(tk.Tk):
         self.geometry("1120x760")
         self.minsize(920, 640)
         self.configure(background=COLORS["background"])
+        self.chrome = WindowChrome(self, f"Codex Sync Desktop  {__version__}", self.destroy)
         self._configure_logging()
         self._configure_styles()
         self._build_ui()
@@ -142,7 +144,7 @@ class CodexSyncApp(tk.Tk):
         style.configure("Tech.Horizontal.TProgressbar", troughcolor=COLORS["surface_alt"], background=COLORS["primary"], lightcolor=COLORS["primary"], darkcolor=COLORS["primary"], bordercolor=COLORS["border"], thickness=8)
 
     def _build_ui(self) -> None:
-        header = ttk.Frame(self, padding=(24, 16, 24, 12))
+        header = ttk.Frame(self.chrome.body, padding=(24, 16, 24, 12))
         header.pack(fill="x")
         ttk.Label(header, text="Codex Sync Desktop", style="Title.TLabel").pack(side="left")
         status = ttk.Frame(header)
@@ -151,7 +153,7 @@ class CodexSyncApp(tk.Tk):
         self.task_progress.pack(side="left", padx=(0, 10))
         self.busy_label = ttk.Label(status, text="就绪", style="Status.TLabel", width=28, anchor="center")
         self.busy_label.pack(side="left")
-        shell = ttk.Frame(self, padding=(20, 0, 20, 20))
+        shell = ttk.Frame(self.chrome.body, padding=(20, 0, 20, 20))
         shell.pack(fill="both", expand=True)
         sidebar = ttk.Frame(shell, style="Sidebar.TFrame", padding=(0, 18))
         sidebar.pack(side="left", fill="y")

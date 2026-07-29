@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from io import StringIO
 from typing import List
 
+from .git_client import hidden_window_kwargs
+
 
 @dataclass
 class ProcessInfo:
@@ -23,7 +25,14 @@ def running_codex_processes(current_pid: int | None = None) -> List[ProcessInfo]
     else:
         command = ["ps", "-axo", "pid=,comm="]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=8)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=8,
+            **hidden_window_kwargs("win32" if platform.system() == "Windows" else None),
+        )
     except (OSError, subprocess.TimeoutExpired):
         return []
     output = result.stdout if isinstance(result.stdout, str) else ""

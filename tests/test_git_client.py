@@ -11,6 +11,7 @@ from codex_sync_desktop.core.git_client import (
     VaultGit,
     command_environment,
     compact_failure_reason,
+    hidden_window_kwargs,
     is_transient_push_failure,
     run,
     summarize_pull,
@@ -19,6 +20,10 @@ from codex_sync_desktop.core.git_client import (
 
 
 class GitClientEnvironmentTests(unittest.TestCase):
+    def test_hidden_window_options_only_apply_to_windows(self):
+        self.assertEqual(hidden_window_kwargs("darwin"), {})
+        self.assertIn("creationflags", hidden_window_kwargs("win32"))
+
     def test_macos_gui_environment_adds_homebrew_paths(self):
         env = command_environment(
             {"PATH": os.pathsep.join(("/usr/bin", "/bin"))},
@@ -122,6 +127,16 @@ class GitClientEnvironmentTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.output, "")
         self.assertEqual(result.returncode, 1)
+
+    @patch("codex_sync_desktop.core.git_client.subprocess.run")
+    @patch("codex_sync_desktop.core.git_client.sys.platform", "win32")
+    def test_run_hides_windows_console(self, mocked_run):
+        mocked_run.return_value = SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        result = run(["git", "status"])
+
+        self.assertTrue(result.ok)
+        self.assertIn("creationflags", mocked_run.call_args.kwargs)
 
 
 class GitOutputSummaryTests(unittest.TestCase):

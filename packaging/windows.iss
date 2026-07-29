@@ -18,6 +18,7 @@ OutputBaseFilename=Codex-Sync-Desktop-Windows-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\assets\icon.ico
 ArchitecturesAllowed=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
 LicenseFile=..\LICENSE

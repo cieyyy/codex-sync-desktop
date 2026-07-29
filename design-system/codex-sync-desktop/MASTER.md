@@ -32,6 +32,13 @@
 
 **Color Notes:** Deep navy operations console with high-contrast electric cyan primary actions, royal blue secondary actions, cyan focus, and no gray normal buttons. Green is reserved for success feedback only.
 
+### Desktop Window Chrome
+
+- Windows uses a borderless custom title bar integrated into the deep navy shell.
+- Window controls use consistent 1.5-2px vector strokes and preserve keyboard focus.
+- The product mark is two device nodes connected by cyan synchronization paths.
+- Command-line work runs without a visible terminal; browsers and operating-system authorization surfaces remain visible.
+
 ### Typography
 
 - **Heading Font:** Orbitron
