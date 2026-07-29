@@ -267,3 +267,11 @@ Before delivering any UI code, verify:
 - Load only the currently selected source, local, or merged version instead of eagerly rendering all versions.
 - Append records in bounded idle-time batches and show loading/completion feedback beside the preview heading.
 - Cancel the previous iterator immediately when the user switches sessions, versions, or closes the dialog.
+
+## First-run Reliability
+
+- Installation success is shown only after the downloaded executable exists and passes a real `--version` launch check.
+- Managed portable tools must display their verified path and explain that they do not appear in the Windows installed-apps list.
+- Browser authentication runs in the background with visible progress; completion is shown only after `gh auth status` passes.
+- A device with zero local sessions and no `session_index.jsonl` is a normal empty state, not a failure.
+- First pull automatically establishes the current branch's upstream when the remote branch exists.

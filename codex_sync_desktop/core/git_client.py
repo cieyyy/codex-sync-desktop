@@ -157,7 +157,21 @@ def is_transient_push_failure(output: str) -> bool:
 
 def is_missing_upstream(output: str) -> bool:
     lowered = output.lower()
-    return "has no upstream branch" in lowered or "set the remote as upstream" in lowered
+    return (
+        "has no upstream branch" in lowered
+        or "set the remote as upstream" in lowered
+        or "no tracking information for the current branch" in lowered
+        or "set-upstream-to=origin/<branch>" in lowered
+    )
+
+
+def is_missing_remote_branch(output: str) -> bool:
+    lowered = output.lower()
+    return (
+        "couldn't find remote ref" in lowered
+        or "no such ref was fetched" in lowered
+        or "remote repository is empty" in lowered
+    )
 
 
 def command_environment(
@@ -233,9 +247,32 @@ class VaultGit:
 
     def pull(self) -> CommandResult:
         result = run(["git", "pull", "--rebase", "--autostash"], self.path, timeout=300, proxy_url=self.proxy_url)
-        if not result.ok and "no such ref was fetched" in result.output.lower():
+        if result.ok:
+            return result
+        if is_missing_remote_branch(result.output):
             return CommandResult(True, "Remote repository is empty", 0)
-        return result
+        if not is_missing_upstream(result.output):
+            return result
+
+        branch = run(["git", "branch", "--show-current"], self.path, proxy_url=self.proxy_url)
+        branch_name = branch.output.strip()
+        if not branch.ok or not branch_name:
+            return branch if not branch.ok else result
+
+        fetched = run(["git", "fetch", "origin", branch_name], self.path, timeout=300, proxy_url=self.proxy_url)
+        if not fetched.ok:
+            if is_missing_remote_branch(fetched.output):
+                return CommandResult(True, "Remote repository is empty", 0)
+            return fetched
+
+        tracked = run(
+            ["git", "branch", "--set-upstream-to", f"origin/{branch_name}", branch_name],
+            self.path,
+            proxy_url=self.proxy_url,
+        )
+        if not tracked.ok:
+            return tracked
+        return run(["git", "pull", "--rebase", "--autostash"], self.path, timeout=300, proxy_url=self.proxy_url)
 
     def status(self) -> CommandResult:
         return run(["git", "status", "--short", "--branch"], self.path, proxy_url=self.proxy_url)

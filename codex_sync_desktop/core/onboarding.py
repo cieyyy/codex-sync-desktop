@@ -50,6 +50,7 @@ class RepositorySetupResult:
 class DependencyInstallResult:
     completed: bool
     message: str
+    verified_gh_path: str = ""
 
 
 def validate_proxy_url(value: str) -> str:
@@ -183,69 +184,50 @@ def _local_proxy_port_open(port: int) -> bool:
         return False
 
 
-def github_setup_status(proxy_url: str = "") -> dict[str, object]:
+def _managed_github_cli(app_home: Path) -> Path:
+    executable = "gh.exe" if sys.platform == "win32" else "gh"
+    return app_home / "tools" / "bin" / executable
+
+
+def _github_cli_path(app_home: Path | None = None) -> Path | None:
+    if app_home:
+        managed = _managed_github_cli(app_home)
+        if managed.is_file():
+            return managed
+    detected = shutil.which("gh", path=command_environment().get("PATH"))
+    return Path(detected) if detected else None
+
+
+def github_setup_status(proxy_url: str = "", app_home: Path | None = None) -> dict[str, object]:
     git_probe = run(["git", "--version"], timeout=10, proxy_url=proxy_url)
-    gh_probe = run(["gh", "--version"], timeout=10, proxy_url=proxy_url)
-    authenticated = github_auth_status(proxy_url).ok if gh_probe.ok else False
+    gh_path = _github_cli_path(app_home)
+    gh_command = str(gh_path) if gh_path else "gh"
+    gh_probe = run([gh_command, "--version"], timeout=10, proxy_url=proxy_url)
+    if gh_probe.ok and app_home:
+        authenticated = run([gh_command, "auth", "status"], timeout=20, proxy_url=proxy_url).ok
+    else:
+        authenticated = github_auth_status(proxy_url).ok if gh_probe.ok else False
     return {
         "git": git_probe.ok,
         "gh": gh_probe.ok,
         "authenticated": authenticated,
+        "gh_path": str(gh_path or ""),
         "git_reason": "" if git_probe.ok else _probe_reason(git_probe, "Git 未安装或无法启动"),
         "gh_reason": "" if gh_probe.ok else _probe_reason(gh_probe, "GitHub CLI 未安装或无法启动"),
     }
 
 
-def launch_github_login(app_home: Path, proxy_url: str = "") -> Path | None:
+def launch_github_login(app_home: Path, proxy_url: str = "") -> CommandResult:
     proxy = validate_proxy_url(proxy_url)
-    gh_path = shutil.which("gh", path=command_environment().get("PATH"))
-    gh_probe = run(["gh", "--version"], timeout=10, proxy_url=proxy)
+    gh_path = _github_cli_path(app_home)
+    gh_probe = run([str(gh_path or "gh"), "--version"], timeout=10, proxy_url=proxy)
     if not gh_path or not gh_probe.ok:
         detail = _probe_reason(gh_probe, "未找到 GitHub CLI")
         raise FileNotFoundError(f"GitHub CLI 未安装或已损坏：{detail}。请点击“自动安装/修复必要工具”")
     app_home.mkdir(parents=True, exist_ok=True)
-    if sys.platform == "win32":
-        subprocess.Popen(
-            [
-                gh_path,
-                "auth",
-                "login",
-                "--hostname",
-                "github.com",
-                "--git-protocol",
-                "https",
-                "--web",
-                "--clipboard",
-                "--skip-ssh-key",
-            ],
-            env=command_environment(proxy_url=proxy),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **hidden_window_kwargs("win32"),
-        )
-        return None
-    if sys.platform == "darwin":
-        subprocess.Popen(
-            [
-                gh_path,
-                "auth",
-                "login",
-                "--hostname",
-                "github.com",
-                "--git-protocol",
-                "https",
-                "--web",
-                "--clipboard",
-                "--skip-ssh-key",
-            ],
-            env=command_environment(proxy_url=proxy),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return None
-    subprocess.Popen(
+    login = run(
         [
-            gh_path,
+            str(gh_path),
             "auth",
             "login",
             "--hostname",
@@ -253,25 +235,33 @@ def launch_github_login(app_home: Path, proxy_url: str = "") -> Path | None:
             "--git-protocol",
             "https",
             "--web",
-            "--clipboard",
-            "--skip-ssh-key",
         ],
-        env=command_environment(proxy_url=proxy),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        **hidden_window_kwargs(),
+        timeout=600,
+        proxy_url=proxy,
     )
-    return None
+    if not login.ok:
+        return login
+    verified = run([str(gh_path), "auth", "status"], timeout=20, proxy_url=proxy)
+    if verified.ok:
+        return CommandResult(True, verified.output or login.output, 0)
+    output = "\n".join(part for part in (login.output, verified.output) if part)
+    return CommandResult(False, output or "GitHub 返回成功，但登录状态复检未通过", verified.returncode)
 
 
 def launch_dependency_install(app_home: Path, proxy_url: str = "") -> DependencyInstallResult:
     proxy = validate_proxy_url(proxy_url)
     app_home.mkdir(parents=True, exist_ok=True)
     git_probe = run(["git", "--version"], timeout=10, proxy_url=proxy)
-    gh_probe = run(["gh", "--version"], timeout=10, proxy_url=proxy)
+    existing_gh = _github_cli_path(app_home)
+    verified_gh_path = existing_gh
+    gh_probe = run([str(existing_gh or "gh"), "--version"], timeout=10, proxy_url=proxy)
     if git_probe.ok and gh_probe.ok:
         clear_tool_installer_cache(app_home)
-        return DependencyInstallResult(True, "Git 和 GitHub CLI 已可用，无需安装。")
+        return DependencyInstallResult(
+            True,
+            f"复检通过：Git 和 GitHub CLI 均可启动。GitHub CLI：{existing_gh or '系统 PATH'}",
+            str(existing_gh or ""),
+        )
     if sys.platform == "win32":
         winget = shutil.which("winget", path=command_environment().get("PATH"))
         winget_failures: list[str] = []
@@ -284,20 +274,31 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Dependency
             )
             if not install.ok:
                 winget_failures.append(f"Git: {_probe_reason(install, 'winget 安装失败')}")
-            verified = github_setup_status(proxy)
+            verified = github_setup_status(proxy, app_home)
             latest_status = verified
             if verified.get("git") and verified.get("gh"):
                 clear_tool_installer_cache(app_home)
-                return DependencyInstallResult(True, "Git 和 GitHub CLI 已自动安装完成，可以继续登录。")
+                return DependencyInstallResult(
+                    True,
+                    f"安装并复检通过：Git 和 GitHub CLI 均可启动。GitHub CLI：{verified.get('gh_path') or '系统 PATH'}",
+                    str(verified.get("gh_path") or ""),
+                )
         if not bool(latest_status.get("gh")):
             gh_path = install_windows_portable_gh(app_home, proxy)
+            if gh_path.is_absolute() and not gh_path.is_file():
+                raise RuntimeError(f"GitHub CLI 下载流程结束，但文件不存在：{gh_path}")
             gh_check = run([str(gh_path), "--version"], timeout=10, proxy_url=proxy)
             if not gh_check.ok:
                 raise RuntimeError(f"GitHub CLI 便携版安装后无法启动：{_probe_reason(gh_check, '启动失败')}")
+            verified_gh_path = gh_path
             latest_status["gh"] = True
             if bool(latest_status.get("git")):
                 clear_tool_installer_cache(app_home)
-                return DependencyInstallResult(True, "GitHub CLI 已在软件目录中自动安装完成，可以继续登录。")
+                return DependencyInstallResult(
+                    True,
+                    f"安装并复检通过：GitHub CLI 已保存到软件私有目录（不会显示在 Windows“已安装的应用”中）：{gh_path}",
+                    str(gh_path),
+                )
         need_git = not bool(latest_status.get("git"))
         if not need_git:
             raise RuntimeError("必要工具安装状态异常，请重新检测后重试")
@@ -310,7 +311,11 @@ def launch_dependency_install(app_home: Path, proxy_url: str = "") -> Dependency
             **hidden_window_kwargs("win32"),
         )
         fallback_note = "；winget 未成功，已切换官方安装包" if winget_failures else ""
-        return DependencyInstallResult(False, f"GitHub CLI 已自动准备完成；Git 官方安装程序已打开{fallback_note}。按系统提示授权，软件会自动检测安装结果。")
+        return DependencyInstallResult(
+            False,
+            f"GitHub CLI 已通过启动复检：{verified_gh_path or '系统 PATH'}。Git 官方安装程序已打开{fallback_note}。按系统提示授权，软件会自动检测安装结果。",
+            str(verified_gh_path or ""),
+        )
     if sys.platform == "darwin":
         actions = []
         if not git_probe.ok:

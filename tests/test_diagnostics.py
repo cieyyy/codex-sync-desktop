@@ -26,6 +26,39 @@ class PlatformDescriptionTests(TestCase):
 
 
 class RemediationTests(TestCase):
+    def test_empty_codex_home_does_not_report_missing_sidebar_index(self) -> None:
+        report = {
+            "sessions": 0,
+            "session_index": False,
+        }
+
+        status, detail = diagnostics.session_index_summary(report)
+        text = diagnostics.remediation_text({
+            **report,
+            "platform": "Windows-10.0.22631",
+            "codex_home_exists": True,
+            "databases": ["state.sqlite"],
+            "git": True,
+            "git_lfs": True,
+            "git_lfs_required": False,
+            "gh": True,
+            "gh_authenticated": True,
+            "vault_exists": True,
+        })
+
+        self.assertEqual(status, "待生成（正常）")
+        self.assertIn("无需创建", detail)
+        self.assertNotIn("侧栏索引：完成会话导入", text)
+
+    def test_existing_sessions_still_require_missing_sidebar_index_repair(self) -> None:
+        status, detail = diagnostics.session_index_summary({
+            "sessions": 3,
+            "session_index": False,
+        })
+
+        self.assertEqual(status, "缺失")
+        self.assertIn("导入并修复", detail)
+
     def test_windows_commands_and_optional_tools_are_explained(self) -> None:
         text = diagnostics.remediation_text({
             "platform": "Windows-10.0.22631",

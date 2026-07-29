@@ -22,6 +22,7 @@ from .core.onboarding import (
     launch_github_login,
     validate_proxy_url,
 )
+from .core.git_client import CommandResult
 from .ui_theme import COLORS, center_window
 
 
@@ -239,11 +240,34 @@ class OnboardingWizard(tk.Toplevel):
 
     def _launch_login(self) -> None:
         try:
-            launch_github_login(self.app.store.app_home, self.proxy_url.get())
-        except (OSError, ValueError) as exc:
+            proxy = validate_proxy_url(self.proxy_url.get())
+        except ValueError as exc:
             messagebox.showerror("无法打开登录", str(exc), parent=self)
             return
-        messagebox.showinfo("登录窗口已打开", "请在新终端和浏览器中完成 GitHub 授权，然后返回此向导点击“重新检测”。", parent=self)
+        self.dependency_status.configure(text="正在打开默认浏览器并等待 GitHub 授权；完成前请不要关闭此向导。")
+
+        def work() -> CommandResult:
+            result = launch_github_login(self.app.store.app_home, proxy)
+            if not result.ok:
+                reason = next((line.strip() for line in reversed(result.output.splitlines()) if line.strip()), "GitHub 登录未完成")
+                raise RuntimeError(reason)
+            return result
+
+        self.app._run_task(
+            "GitHub 登录",
+            work,
+            self._github_login_finished,
+            callback_with_result=True,
+            error_callback=self._github_login_failed,
+        )
+
+    def _github_login_finished(self, _result: CommandResult) -> None:
+        self.dependency_status.configure(text="GitHub 登录已完成并通过状态复检。")
+        self._refresh_account()
+        messagebox.showinfo("GitHub 登录成功", "浏览器授权已完成，登录状态复检通过。", parent=self)
+
+    def _github_login_failed(self, exc: Exception) -> None:
+        self.dependency_status.configure(text=f"GitHub 登录失败：{exc}\n请检查浏览器授权、网络或代理后重试。")
 
     def _install_dependencies(self) -> None:
         if not messagebox.askyesno(
@@ -293,7 +317,7 @@ class OnboardingWizard(tk.Toplevel):
             return
         self.app._run_task(
             "自动检测必要工具",
-            lambda: github_setup_status(proxy),
+            lambda: github_setup_status(proxy, self.app.store.app_home),
             self._dependency_poll_result,
             callback_with_result=True,
         )
@@ -315,7 +339,12 @@ class OnboardingWizard(tk.Toplevel):
         except ValueError as exc:
             messagebox.showerror("代理地址错误", str(exc), parent=self)
             return
-        self.app._run_task("检查 GitHub 登录", lambda: github_setup_status(proxy), self._show_account_status, callback_with_result=True)
+        self.app._run_task(
+            "检查 GitHub 登录",
+            lambda: github_setup_status(proxy, self.app.store.app_home),
+            self._show_account_status,
+            callback_with_result=True,
+        )
 
     def _show_account_status(self, status: dict[str, object]) -> None:
         self.account_status = status
@@ -329,7 +358,8 @@ class OnboardingWizard(tk.Toplevel):
             self.account_tree.insert("", "end", values=(label, "已完成" if ok else "未完成", "无需处理" if ok else action))
         if status.get("git") and status.get("gh"):
             clear_tool_installer_cache(self.app.store.app_home)
-            self.dependency_status.configure(text="必要工具已安装并通过实际启动检测，可以继续 GitHub 登录。")
+            gh_path = str(status.get("gh_path") or "系统 PATH")
+            self.dependency_status.configure(text=f"必要工具已安装并通过实际启动检测。GitHub CLI：{gh_path}")
 
     def _finish_setup(self) -> None:
         try:

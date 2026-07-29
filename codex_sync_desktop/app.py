@@ -26,7 +26,7 @@ from .core.backups import (
     rollback_import_transaction,
 )
 from .core.config import SettingsStore, device_slug
-from .core.diagnostics import collect_diagnostics, diagnostics_json, remediation_text
+from .core.diagnostics import collect_diagnostics, diagnostics_json, remediation_text, session_index_summary
 from .core.git_client import VaultGit, compact_failure_reason, summarize_pull
 from .core.import_preview import apply_title_overrides, items_for_category
 from .core.index_repair import repair_indexes
@@ -337,13 +337,13 @@ class CodexSyncApp(tk.Tk):
         git_detail = "Git 可用" if diagnostics["git"] else "同步必需；安装命令见“查看解决办法”"
         codex_detail = diagnostics["codex_home"] if diagnostics["codex_home_exists"] else "在“日志与设置”中选择当前用户的 .codex 目录"
         database_detail = ", ".join(Path(item).name for item in diagnostics["databases"]) or "先启动一次 Codex，再刷新检查"
-        index_detail = "session_index.jsonl" if diagnostics["session_index"] else "导入后执行“导入并修复”，或使用 Codex++ 修复"
+        index_status, index_detail = session_index_summary(diagnostics)
         vault_detail = str(self.settings.vault or "") if diagnostics.get("vault_exists") else "在“日志与设置”中选择或克隆同步仓库"
         rows = [
             ("Codex 数据目录", "正常" if diagnostics["codex_home_exists"] else "未找到", codex_detail),
             ("本机会话", str(diagnostics["sessions"]), "JSONL 会话文件"),
             ("状态数据库", str(len(diagnostics["databases"])), database_detail),
-            ("侧栏索引", "正常" if diagnostics["session_index"] else "缺失", index_detail),
+            ("侧栏索引", index_status, index_detail),
             ("Git", "正常" if diagnostics["git"] else "缺失（必需）", git_detail),
             ("Git LFS", lfs_status, lfs_detail),
             ("GitHub CLI", gh_status, gh_detail),

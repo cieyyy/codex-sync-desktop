@@ -62,20 +62,40 @@ class ProxyValidationTests(TestCase):
         mocked_context.assert_called_once_with(cafile="trusted-ca.pem")
         self.assertEqual(len(handlers), 2)
 
-    @patch("codex_sync_desktop.core.onboarding.subprocess.Popen")
     @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=r"C:\Tools\gh.exe")
-    @patch("codex_sync_desktop.core.onboarding.run", return_value=CommandResult(True, "gh version", 0))
+    @patch("codex_sync_desktop.core.onboarding.run")
     @patch("codex_sync_desktop.core.onboarding.sys.platform", "win32")
-    def test_windows_github_login_runs_hidden_without_powershell(self, _run, _which, mocked_popen):
+    def test_windows_github_login_waits_for_web_auth_and_rechecks_status(self, mocked_run, _which):
+        mocked_run.side_effect = [
+            CommandResult(True, "gh version", 0),
+            CommandResult(True, "browser authentication completed", 0),
+            CommandResult(True, "Logged in to github.com", 0),
+        ]
         with tempfile.TemporaryDirectory() as directory:
-            launch_github_login(Path(directory), "http://127.0.0.1:7890")
+            result = launch_github_login(Path(directory), "http://127.0.0.1:7890")
 
-        command = mocked_popen.call_args.args[0]
+        self.assertTrue(result.ok)
+        command = mocked_run.call_args_list[1].args[0]
         self.assertEqual(command[0], r"C:\Tools\gh.exe")
         self.assertIn("--web", command)
-        self.assertIn("--clipboard", command)
-        self.assertIn("--skip-ssh-key", command)
-        self.assertIn("creationflags", mocked_popen.call_args.kwargs)
+        self.assertNotIn("powershell.exe", command)
+        self.assertEqual(
+            mocked_run.call_args_list[-1].args[0],
+            [r"C:\Tools\gh.exe", "auth", "status"],
+        )
+
+    @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=r"C:\Tools\gh.exe")
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_github_login_reports_browser_auth_failure(self, mocked_run, _which):
+        mocked_run.side_effect = [
+            CommandResult(True, "gh version", 0),
+            CommandResult(False, "browser authorization was cancelled", 1),
+        ]
+
+        result = launch_github_login(Path("app-home"))
+
+        self.assertFalse(result.ok)
+        self.assertIn("cancelled", result.output)
 
 
 class PrivateRepositorySetupTests(TestCase):

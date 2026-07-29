@@ -173,6 +173,41 @@ Fast-forward
 
 class GitPushRecoveryTests(unittest.TestCase):
     @patch("codex_sync_desktop.core.git_client.run")
+    def test_pull_sets_upstream_and_retries_when_tracking_is_missing(self, mocked_run):
+        mocked_run.side_effect = [
+            CommandResult(False, "There is no tracking information for the current branch.", 1),
+            CommandResult(True, "main", 0),
+            CommandResult(True, "fetched", 0),
+            CommandResult(True, "branch 'main' set up to track 'origin/main'", 0),
+            CommandResult(True, "Already up to date.", 0),
+        ]
+
+        result = VaultGit(Path("/vault")).pull()
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            mocked_run.call_args_list[3].args[0],
+            ["git", "branch", "--set-upstream-to", "origin/main", "main"],
+        )
+        self.assertEqual(
+            mocked_run.call_args_list[-1].args[0],
+            ["git", "pull", "--rebase", "--autostash"],
+        )
+
+    @patch("codex_sync_desktop.core.git_client.run")
+    def test_pull_without_upstream_accepts_empty_remote(self, mocked_run):
+        mocked_run.side_effect = [
+            CommandResult(False, "There is no tracking information for the current branch.", 1),
+            CommandResult(True, "main", 0),
+            CommandResult(False, "fatal: couldn't find remote ref main", 128),
+        ]
+
+        result = VaultGit(Path("/vault")).pull()
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, "Remote repository is empty")
+
+    @patch("codex_sync_desktop.core.git_client.run")
     def test_sets_upstream_for_first_commit_in_new_private_repository(self, mocked_run):
         mocked_run.side_effect = [
             CommandResult(True, "", 0),

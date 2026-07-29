@@ -36,6 +36,14 @@ def vault_uses_lfs(vault: Path | None) -> bool:
         return False
 
 
+def session_index_summary(diagnostics: Dict[str, Any]) -> tuple[str, str]:
+    if diagnostics.get("session_index"):
+        return "正常", "session_index.jsonl"
+    if int(diagnostics.get("sessions") or 0) == 0:
+        return "待生成（正常）", "当前没有本地会话，无需创建侧栏索引；首次导入时会自动生成"
+    return "缺失", "本地已有会话；请执行“导入并修复”，或使用 Codex++ 修复"
+
+
 def remediation_text(diagnostics: Dict[str, Any]) -> str:
     windows = str(diagnostics.get("platform", "")).startswith("Windows")
     git_install = (
@@ -57,7 +65,7 @@ def remediation_text(diagnostics: Dict[str, Any]) -> str:
         required.append("Codex 数据目录：打开“设置”，将目录指向当前用户的 .codex 文件夹。")
     if not diagnostics.get("databases"):
         required.append("状态数据库：先启动一次 Codex；如果仍缺失，检查设置中的 Codex 数据目录。")
-    if not diagnostics.get("session_index"):
+    if not diagnostics.get("session_index") and int(diagnostics.get("sessions") or 0) > 0:
         required.append("侧栏索引：完成会话导入后执行“导入并修复归档”，或使用 Codex++ 修复历史会话。")
     if not diagnostics.get("git"):
         required.append(f"Git（同步必需）：\n{git_install}")
@@ -100,6 +108,7 @@ def collect_diagnostics(codex_home: Path, vault: Path | None = None, proxy_url: 
         "sessions": sessions,
         "databases": [str(path) for path in databases],
         "session_index": (codex_home / "session_index.jsonl").exists(),
+        "session_index_required": sessions > 0,
         "git": command_available("git"),
         "git_lfs": command_available("git-lfs"),
         "git_lfs_required": vault_uses_lfs(vault),
