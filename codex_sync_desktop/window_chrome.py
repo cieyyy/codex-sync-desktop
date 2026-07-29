@@ -2,14 +2,34 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import tkinter as tk
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from .ui_theme import COLORS
 
 
 TITLEBAR_HEIGHT = 42
+APP_USER_MODEL_ID = "cieyyy.CodexSyncDesktop"
+
+
+def bundled_asset_path(name: str) -> Path:
+    """Resolve an asset in source checkouts and PyInstaller bundles."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    return bundle_root / "assets" / name
+
+
+def configure_windows_app_identity() -> bool:
+    """Give Windows a stable identity before Tk creates its native window."""
+    if os.name != "nt":
+        return False
+    try:
+        result = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        return result == 0
+    except (AttributeError, OSError):
+        return False
 
 
 def draw_sync_mark(canvas: tk.Canvas, size: int = 24) -> None:
@@ -133,7 +153,7 @@ class WindowChrome:
             window,
             background=COLORS["background"],
             highlightbackground=COLORS["border"],
-            highlightcolor=COLORS["cyan"],
+            highlightcolor=COLORS["border"],
             highlightthickness=1 if self.enabled else 0,
             borderwidth=0,
         )
@@ -182,16 +202,53 @@ class WindowChrome:
         if not self.enabled:
             return
         try:
-            hwnd = ctypes.windll.user32.GetParent(self.window.winfo_id())
-            get_window_long = ctypes.windll.user32.GetWindowLongW
-            set_window_long = ctypes.windll.user32.SetWindowLongW
+            hwnd = self._native_window_handle()
+            user32 = ctypes.windll.user32
+            get_window_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
+            set_window_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+            get_window_long.argtypes = (ctypes.c_void_p, ctypes.c_int)
+            get_window_long.restype = ctypes.c_ssize_t
+            set_window_long.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t)
+            set_window_long.restype = ctypes.c_ssize_t
             extended_style = get_window_long(hwnd, -20)
             extended_style = (extended_style & ~0x00000080) | 0x00040000
             set_window_long(hwnd, -20, extended_style)
+            self._set_native_icon(hwnd)
             self.window.withdraw()
             self.window.after(10, self.window.deiconify)
         except (AttributeError, OSError):
             pass
+
+    def _native_window_handle(self) -> int:
+        user32 = ctypes.windll.user32
+        get_parent = user32.GetParent
+        get_parent.argtypes = (ctypes.c_void_p,)
+        get_parent.restype = ctypes.c_void_p
+        child = self.window.winfo_id()
+        return get_parent(child) or child
+
+    def _set_native_icon(self, hwnd: int) -> bool:
+        """Apply the packaged icon to the borderless taskbar/Alt+Tab window."""
+        icon_path = bundled_asset_path("icon.ico")
+        if not icon_path.is_file():
+            return False
+        try:
+            self.window.iconbitmap(default=str(icon_path))
+            user32 = ctypes.windll.user32
+            load_image = user32.LoadImageW
+            load_image.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint)
+            load_image.restype = ctypes.c_void_p
+            icon_handle = load_image(None, str(icon_path), 1, 0, 0, 0x10 | 0x40)
+            if not icon_handle:
+                return False
+            send_message = user32.SendMessageW
+            send_message.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_void_p)
+            send_message(hwnd, 0x0080, 0, icon_handle)
+            send_message(hwnd, 0x0080, 1, icon_handle)
+            self._icon_handle = icon_handle
+            return True
+        except (AttributeError, OSError, tk.TclError):
+            return False
 
     def _start_drag(self, event: tk.Event) -> None:
         if self.maximized:
@@ -210,7 +267,7 @@ class WindowChrome:
             self.window.iconify()
             return
         try:
-            hwnd = ctypes.windll.user32.GetParent(self.window.winfo_id())
+            hwnd = self._native_window_handle()
             ctypes.windll.user32.ShowWindow(hwnd, 6)
         except (AttributeError, OSError):
             self.window.iconify()

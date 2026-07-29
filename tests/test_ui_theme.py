@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import queue
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
+from unittest.mock import Mock, patch
 
 from codex_sync_desktop.app import CodexSyncApp, dependency_setup_incomplete
 from codex_sync_desktop.ui_theme import centered_geometry
+from codex_sync_desktop.window_chrome import APP_USER_MODEL_ID, WindowChrome, bundled_asset_path, configure_windows_app_identity
 
 
 class WindowPlacementTests(TestCase):
@@ -32,3 +35,37 @@ class TaskFeedbackTests(TestCase):
         self.assertTrue(dependency_setup_incomplete({"git": False, "gh": True}))
         self.assertTrue(dependency_setup_incomplete({"git": True, "gh": False}))
         self.assertFalse(dependency_setup_incomplete({"git": True, "gh": True}))
+
+    def test_mouse_navigation_releases_dotted_focus_ring(self):
+        focus_set = Mock()
+        fake_app = SimpleNamespace(after_idle=Mock(), chrome=SimpleNamespace(body=SimpleNamespace(focus_set=focus_set)))
+
+        CodexSyncApp._release_nav_mouse_focus(fake_app, None)
+
+        fake_app.after_idle.assert_called_once_with(focus_set)
+
+
+class WindowsChromeTests(TestCase):
+    @patch("codex_sync_desktop.window_chrome.os.name", "posix")
+    def test_non_windows_identity_is_skipped(self):
+        self.assertFalse(configure_windows_app_identity())
+
+    @patch("codex_sync_desktop.window_chrome.os.name", "nt")
+    @patch("codex_sync_desktop.window_chrome.ctypes.windll", create=True)
+    def test_windows_identity_uses_stable_app_id(self, mocked_windll):
+        mocked_windll.shell32.SetCurrentProcessExplicitAppUserModelID.return_value = 0
+
+        self.assertTrue(configure_windows_app_identity())
+        mocked_windll.shell32.SetCurrentProcessExplicitAppUserModelID.assert_called_once_with(APP_USER_MODEL_ID)
+
+    @patch("codex_sync_desktop.window_chrome.ctypes.windll", create=True)
+    def test_native_window_handle_uses_64_bit_safe_parent(self, mocked_windll):
+        mocked_windll.user32.GetParent.return_value = 456
+        chrome = SimpleNamespace(window=SimpleNamespace(winfo_id=lambda: 123))
+
+        self.assertEqual(WindowChrome._native_window_handle(chrome), 456)
+        mocked_windll.user32.GetParent.assert_called_once_with(123)
+
+    def test_bundled_asset_path_uses_pyinstaller_root(self):
+        with patch("codex_sync_desktop.window_chrome.sys._MEIPASS", "C:/bundle", create=True):
+            self.assertEqual(bundled_asset_path("icon.ico"), Path("C:/bundle/assets/icon.ico"))

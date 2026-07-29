@@ -235,3 +235,13 @@ Before delivering any UI code, verify:
 - [ ] Responsive: 375px, 768px, 1024px, 1440px
 - [ ] No content hidden behind fixed navbars
 - [ ] No horizontal scroll on mobile
+
+---
+
+## Desktop Window Chrome v0.6.9
+
+- The outer application frame always uses the deep navy border token; window focus must not switch it to cyan.
+- Mouse-selected navigation relies on the active-page fill and must not retain a dotted focus rectangle.
+- Keyboard navigation keeps a visible focus state so removing mouse focus does not remove accessibility.
+- Windows taskbar, Alt+Tab, executable, installer, and shortcuts use the same generated product icon.
+- The Windows process sets a stable AppUserModelID before Tk creates the native window.

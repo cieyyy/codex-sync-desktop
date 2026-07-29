@@ -33,7 +33,7 @@ from .core.onboarding import validate_proxy_url
 from .core.processes import running_codex_processes
 from .core.sessions import apply_import, export_sanitized_sessions, list_source_devices, plan_import
 from .ui_theme import COLORS, center_window
-from .window_chrome import WindowChrome
+from .window_chrome import WindowChrome, configure_windows_app_identity
 from .wizard import OnboardingWizard
 
 
@@ -168,6 +168,7 @@ class CodexSyncApp(tk.Tk):
         ):
             button = ttk.Button(sidebar, text=title, style="Nav.TButton", command=lambda value=key: self.show_page(value))
             button.pack(fill="x", padx=8, pady=3)
+            button.bind("<ButtonRelease-1>", self._release_nav_mouse_focus, add="+")
             self.nav_buttons[key] = button
         ttk.Label(sidebar, text=f"版本 {__version__}", style="SidebarMuted.TLabel", padding=(18, 16)).pack(side="bottom", fill="x")
         self.content = ttk.Frame(shell, padding=(18, 0, 0, 0))
@@ -183,6 +184,10 @@ class CodexSyncApp(tk.Tk):
         self._build_backups()
         self._build_maintenance()
         self.show_page("overview")
+
+    def _release_nav_mouse_focus(self, _event: tk.Event) -> None:
+        """Mouse selection uses the active-page fill without a dotted focus ring."""
+        self.after_idle(self.chrome.body.focus_set)
 
     def show_page(self, name: str) -> None:
         for key, page in self.pages.items():
@@ -846,6 +851,7 @@ def main() -> None:
             "The macOS system Python uses Tk 8.5, which cannot open this UI on the current macOS release. "
             "Use the packaged macOS app, or run the source with Python 3.11+ and Tk 8.6+."
         )
+    configure_windows_app_identity()
     app = CodexSyncApp(store)
     if args.smoke_onboarding:
         app.withdraw()

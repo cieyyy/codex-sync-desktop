@@ -7,3 +7,6 @@ dist/
 *.spec
 .DS_Store
 .venv/
+assets/icon.icns
+assets/icon.ico
+assets/icon.png
