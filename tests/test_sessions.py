@@ -12,6 +12,13 @@ from codex_sync_desktop.core.backups import (
     prune_backup_history,
     rollback_import_transaction,
 )
+from codex_sync_desktop.core.import_preview import (
+    apply_title_overrides,
+    items_for_category,
+    preview_versions,
+    render_session_bytes,
+)
+from codex_sync_desktop.core.models import ImportItem, ImportPlan
 from codex_sync_desktop.core.sessions import apply_import, export_sanitized_sessions, plan_import
 from tests.helpers import create_state_database, write_session
 
@@ -76,6 +83,90 @@ class SessionSyncTests(unittest.TestCase):
             self.assertEqual(manifest["sessions"][0]["title"], "Renamed on Mac")
             plan = plan_import(target_home, vault, "office-mac")
             self.assertEqual(plan.title_updates, {session_id: "Renamed on Mac"})
+            self.assertEqual(plan.items[0].task_id, session_id)
+            self.assertEqual(plan.items[0].source_title, "Renamed on Mac")
+            self.assertEqual(plan.items[0].local_title, "Old Windows name")
+
+    def test_preview_title_override_survives_a_replanned_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            target_home = root / "target"
+            vault = root / "vault"
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            write_session(source_home, session_id)
+            source_database = create_state_database(source_home)
+            with closing(sqlite3.connect(source_database)) as connection:
+                connection.execute(
+                    "INSERT INTO threads (id,rollout_path,created_at,updated_at,source,model_provider,cwd,title,sandbox_policy,approval_mode) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (session_id, "source", 1, 1, "app", "openai", "/source", "Source title", "{}", "never"),
+                )
+                connection.commit()
+            export_sanitized_sessions(source_home, vault, "Office Mac")
+
+            preview_plan = plan_import(target_home, vault, "office-mac")
+            self.assertEqual(apply_title_overrides(preview_plan, {session_id: "My edited title"}), 1)
+            self.assertEqual(preview_plan.title_updates[session_id], "My edited title")
+
+            import_plan = plan_import(target_home, vault, "office-mac")
+            apply_title_overrides(import_plan, {session_id: "My edited title"})
+            self.assertEqual(import_plan.title_updates[session_id], "My edited title")
+            self.assertEqual(len(items_for_category(import_plan, "title-update")), 1)
+
+    def test_preview_failure_category_combines_both_verification_failures(self):
+        plan = ImportPlan(
+            source_device="source",
+            items=[
+                ImportItem("missing-source", "missing.jsonl", Path("missing"), Path("target")),
+                ImportItem("invalid-source-hash", "invalid.jsonl", Path("invalid"), Path("target")),
+                ImportItem("copy", "copy.jsonl", Path("copy"), Path("target")),
+            ],
+        )
+        self.assertEqual(len(items_for_category(plan, "failure")), 2)
+        self.assertEqual(len(items_for_category(plan, "copy")), 1)
+
+    def test_preview_conflict_exposes_source_local_and_merged_versions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_session(root / "source", "019f9999-1111-7222-8333-444455556666", "Source question")
+            local = write_session(root / "local", "019f9999-1111-7222-8333-444455556666", "Local question")
+            merged = source.read_bytes() + local.read_bytes()
+            item = ImportItem("conflict", "sessions/example.jsonl", source, local, merged_content=merged)
+            versions = dict(preview_versions(item))
+            self.assertEqual(list(versions), ["来源设备", "本机", "合并后"])
+            self.assertIn("Source question", versions["来源设备"])
+            self.assertIn("Local question", versions["本机"])
+            self.assertIn("Source question", versions["合并后"])
+            self.assertIn("Local question", versions["合并后"])
+
+    def test_title_override_equal_to_local_title_removes_pending_update(self):
+        task_id = "019f9999-1111-7222-8333-444455556666"
+        item = ImportItem(
+            "identical",
+            "sessions/example.jsonl",
+            Path("source"),
+            Path("destination"),
+            task_id=task_id,
+            source_title="Incoming title",
+            local_title="Keep local title",
+        )
+        plan = ImportPlan("source", [item], {task_id: "Incoming title"})
+        apply_title_overrides(plan, {task_id: "Keep local title"})
+        self.assertEqual(plan.title_updates, {})
+
+    def test_preview_renders_conversation_and_tool_records(self):
+        records = [
+            {"timestamp": "2026-07-25T10:00:01Z", "type": "event_msg", "payload": {"type": "user_message", "message": "Question"}},
+            {"timestamp": "2026-07-25T10:00:02Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Answer"}]}},
+            {"timestamp": "2026-07-25T10:00:03Z", "type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "git status"}},
+        ]
+        content = "".join(json.dumps(record) + "\n" for record in records).encode("utf-8")
+        preview = render_session_bytes(content)
+        self.assertIn("用户", preview)
+        self.assertIn("Question", preview)
+        self.assertIn("助手", preview)
+        self.assertIn("Answer", preview)
+        self.assertIn("命令 / 工具调用：shell", preview)
 
     def test_raw_destination_is_identical_to_its_sanitized_export(self):
         with tempfile.TemporaryDirectory() as directory:

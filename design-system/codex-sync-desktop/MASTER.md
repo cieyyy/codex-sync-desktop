@@ -245,3 +245,11 @@ Before delivering any UI code, verify:
 - Keyboard navigation keeps a visible focus state so removing mouse focus does not remove accessibility.
 - Windows taskbar, Alt+Tab, executable, installer, and shortcuts use the same generated product icon.
 - The Windows process sets a stable AppUserModelID before Tk creates the native window.
+
+## Import Preview v0.7.0
+
+- The action summary uses five stable categories: copy, identical, automatic merge, failure, and title update.
+- Clicking a populated action opens a centered modal with a master-detail layout: session list on the left, metadata and bounded text preview on the right.
+- Conflict previews expose source, local, and merged versions without allowing raw JSONL edits.
+- The final title is the only editable field. Validation happens on blur, invalid titles show an inline recovery message, and valid changes remain pending until import.
+- The modal preserves keyboard escape, Enter navigation, and Ctrl+S while keeping visible focus and high-contrast dark surfaces.

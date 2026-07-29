@@ -28,10 +28,12 @@ from .core.backups import (
 from .core.config import SettingsStore, device_slug
 from .core.diagnostics import collect_diagnostics, diagnostics_json, remediation_text
 from .core.git_client import VaultGit, compact_failure_reason, summarize_pull
+from .core.import_preview import apply_title_overrides, items_for_category
 from .core.index_repair import repair_indexes
 from .core.onboarding import validate_proxy_url
 from .core.processes import running_codex_processes
 from .core.sessions import apply_import, export_sanitized_sessions, list_source_devices, plan_import
+from .import_preview_dialog import ImportPreviewDialog
 from .ui_theme import COLORS, center_window
 from .window_chrome import WindowChrome, configure_windows_app_identity
 from .wizard import OnboardingWizard
@@ -57,6 +59,7 @@ class CodexSyncApp(tk.Tk):
         self.settings = self.store.load()
         self.messages: queue.Queue = queue.Queue()
         self.active_plan = None
+        self.title_overrides: dict[str, dict[str, str]] = {}
         self.last_diagnostics: dict[str, Any] | None = None
         self.task_buttons: list[ttk.Button] = []
         self.pages: dict[str, ttk.Frame] = {}
@@ -240,7 +243,14 @@ class CodexSyncApp(tk.Tk):
         self._task_button(actions, "导出并推送", self.export_and_push).pack(side="left", padx=6)
         self._task_button(actions, "预览导入", self.preview_import).pack(side="left", padx=(12, 6))
         self._task_button(actions, "导入并修复", self.import_and_repair).pack(side="left")
+        ttk.Label(
+            self.sync_tab,
+            text="预览完成后，点击下方动作可查看对应会话并修改最终导入标题。",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 8))
         self.import_tree = self._tree(self.sync_tab, ("action", "count", "meaning"), (180, 100, 610))
+        self.import_tree.bind("<ButtonRelease-1>", self._open_import_action_from_event, add="+")
+        self.import_tree.bind("<Return>", lambda _event: self._open_selected_import_action(), add="+")
 
     def _build_backups(self) -> None:
         self._page_header(self.backups_tab, "备份与清理", "仅保留最近一次导入保护；撤销前会校验会话是否被继续修改")
@@ -538,6 +548,7 @@ class CodexSyncApp(tk.Tk):
             if should_import:
                 self._report_progress(f"正在分析来源设备 {source} 的会话")
                 plan = plan_import(self.settings.codex_path, vault, source)
+                CodexSyncApp._apply_preview_title_overrides(self, plan)
                 has_changes = any(item.action in ("copy", "conflict") for item in plan.items) or bool(plan.title_updates)
                 if has_changes:
                     transaction = create_import_transaction(self.settings.codex_path, plan)
@@ -591,7 +602,9 @@ class CodexSyncApp(tk.Tk):
                 self._report_progress("正在拉取仓库最新内容")
                 self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
             self._report_progress(f"正在分析来源设备 {source} 的会话")
-            return plan_import(self.settings.codex_path, vault, source)
+            plan = plan_import(self.settings.codex_path, vault, source)
+            CodexSyncApp._apply_preview_title_overrides(self, plan)
+            return plan
         self._run_task("预览导入", work, self._show_import_plan, callback_with_result=True)
 
     def import_and_repair(self) -> None:
@@ -613,6 +626,7 @@ class CodexSyncApp(tk.Tk):
                 self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
             self._report_progress(f"正在分析来源设备 {source} 的会话")
             plan = plan_import(self.settings.codex_path, vault, source)
+            CodexSyncApp._apply_preview_title_overrides(self, plan)
             transaction = create_import_transaction(self.settings.codex_path, plan)
             try:
                 self._report_progress("正在合并会话内容")
@@ -671,12 +685,62 @@ class CodexSyncApp(tk.Tk):
     def _show_import_plan(self, plan: Any) -> None:
         self.active_plan = plan
         self.import_tree.delete(*self.import_tree.get_children())
-        display_names = {"copy": "新增", "identical": "相同", "conflict": "自动合并", "missing-source": "失败", "invalid-source-hash": "失败"}
-        meanings = {"copy": "本机不存在，将追加", "identical": "内容相同，无需处理", "conflict": "内容不同，导入时自动合并", "missing-source": "仓库缺少源文件", "invalid-source-hash": "文件未通过清单校验"}
-        for action in ("copy", "identical", "conflict", "missing-source", "invalid-source-hash"):
-            count = plan.counts.get(action, 0)
-            self.import_tree.insert("", "end", values=(display_names[action], count, meanings[action]))
-        self.import_tree.insert("", "end", values=("标题更新", len(plan.title_updates), "采用所选来源设备的非空标题"))
+        rows = (
+            ("copy", "新增", len(items_for_category(plan, "copy")), "本机不存在，将追加；点击查看"),
+            ("identical", "相同", len(items_for_category(plan, "identical")), "内容相同，无需处理；点击查看"),
+            ("conflict", "自动合并", len(items_for_category(plan, "conflict")), "内容不同，将后台合并；点击查看三个版本"),
+            ("failure", "失败", len(items_for_category(plan, "failure")), "缺少文件或校验失败；点击查看原因"),
+            ("title-update", "标题更新", len(items_for_category(plan, "title-update")), "采用最终标题；点击查看或修改"),
+        )
+        for key, name, count, meaning in rows:
+            self.import_tree.insert("", "end", iid=key, values=(name, count, meaning))
+
+    def _apply_preview_title_overrides(self, plan: Any) -> int:
+        overrides = getattr(self, "title_overrides", {}).get(plan.source_device, {})
+        return apply_title_overrides(plan, overrides)
+
+    def _remember_title_override(self, task_id: str, title: str) -> None:
+        if self.active_plan is None:
+            return
+        source = self.active_plan.source_device
+        self.title_overrides.setdefault(source, {})[task_id] = title
+        apply_title_overrides(self.active_plan, {task_id: title})
+        if self.import_tree.exists("title-update"):
+            self.import_tree.set(
+                "title-update",
+                "count",
+                len(items_for_category(self.active_plan, "title-update")),
+            )
+
+    def _open_import_action_from_event(self, event: tk.Event) -> None:
+        row = self.import_tree.identify_row(event.y)
+        if not row:
+            return
+        self.import_tree.selection_set(row)
+        self.import_tree.focus(row)
+        self._open_import_action(row)
+
+    def _open_selected_import_action(self) -> None:
+        selection = self.import_tree.selection()
+        if selection:
+            self._open_import_action(selection[0])
+
+    def _open_import_action(self, category: str) -> None:
+        plan = self.active_plan
+        if plan is None:
+            messagebox.showinfo("尚未生成预览", "请先点击“预览导入”。")
+            return
+        items = items_for_category(plan, category)
+        if not items:
+            messagebox.showinfo("没有对应内容", "该动作当前没有可预览的会话。")
+            return
+        ImportPreviewDialog(
+            self,
+            plan,
+            category,
+            self.title_overrides.get(plan.source_device, {}),
+            self._remember_title_override,
+        )
 
     def _require_vault(self) -> Path | None:
         vault = self.settings.vault
@@ -832,6 +896,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vault", type=Path, help="override sync vault for diagnostics")
     parser.add_argument("--smoke-ui", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smoke-onboarding", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-import-preview", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -843,7 +908,7 @@ def main() -> None:
         print(diagnostics_json(args.codex_home or settings.codex_path, args.vault or settings.vault, settings.proxy_url))
         return
     if sys.platform == "darwin" and not getattr(sys, "frozen", False) and tk.TkVersion < 8.6:
-        if args.smoke_ui or args.smoke_onboarding:
+        if args.smoke_ui or args.smoke_onboarding or args.smoke_import_preview:
             interpreter = tk.Tcl()
             print(f"ui-import-smoke-ok (Tk {interpreter.eval('info patchlevel')}; window skipped because Tk 8.6+ is required)")
             return
@@ -858,6 +923,42 @@ def main() -> None:
         wizard = OnboardingWizard(app)
         wizard.update_idletasks()
         wizard.destroy()
+        app.destroy()
+        return
+    if args.smoke_import_preview:
+        from .core.models import ImportItem, ImportPlan
+
+        app.withdraw()
+        item = ImportItem(
+            "conflict",
+            "sessions/smoke.jsonl",
+            Path("missing-source.jsonl"),
+            Path("missing-local.jsonl"),
+            merged_content=(
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "preview smoke"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            ).encode("utf-8"),
+            task_id="preview-smoke-task",
+            source_title="Preview smoke",
+        )
+        plan = ImportPlan(
+            source_device="preview-smoke-device",
+            items=[item],
+            title_updates={item.task_id: item.source_title},
+        )
+        dialog = ImportPreviewDialog(app, plan, "conflict", {}, lambda _task_id, _title: None)
+        dialog.update_idletasks()
+        if dialog.current_item is None or dialog.current_item.task_id != item.task_id:
+            raise RuntimeError("Import preview did not select the smoke-test session")
+        if "preview smoke" not in dialog.preview_text.get("1.0", "end"):
+            raise RuntimeError("Import preview did not render merged conversation text")
+        dialog.destroy()
         app.destroy()
         return
     if args.smoke_ui:

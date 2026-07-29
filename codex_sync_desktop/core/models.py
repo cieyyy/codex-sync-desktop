@@ -45,6 +45,9 @@ class ImportItem:
     destination: Path
     merged_content: Optional[bytes] = None
     detail: str = ""
+    task_id: str = ""
+    source_title: str = ""
+    local_title: str = ""
 
 
 @dataclass

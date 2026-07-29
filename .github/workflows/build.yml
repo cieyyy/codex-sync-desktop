@@ -35,7 +35,9 @@ jobs:
       - name: Smoke test Windows app
         if: runner.os == 'Windows'
         shell: pwsh
-        run: '& "dist/Codex Sync Desktop/Codex Sync Desktop.exe" --smoke-onboarding'
+        run: |
+          & "dist/Codex Sync Desktop/Codex Sync Desktop.exe" --smoke-onboarding
+          & "dist/Codex Sync Desktop/Codex Sync Desktop.exe" --smoke-import-preview
       - name: Build Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -52,11 +54,15 @@ jobs:
           if ($installer.ExitCode -ne 0) { throw "Installer failed with exit code $($installer.ExitCode)" }
           $smoke = Start-Process -FilePath "$installDir\Codex Sync Desktop.exe" -ArgumentList @('--smoke-onboarding') -Wait -PassThru
           if ($smoke.ExitCode -ne 0) { throw "Installed app smoke test failed with exit code $($smoke.ExitCode)" }
+          $previewSmoke = Start-Process -FilePath "$installDir\Codex Sync Desktop.exe" -ArgumentList @('--smoke-import-preview') -Wait -PassThru
+          if ($previewSmoke.ExitCode -ne 0) { throw "Installed import preview smoke test failed with exit code $($previewSmoke.ExitCode)" }
           $uninstaller = Start-Process -FilePath "$installDir\unins000.exe" -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
           if ($uninstaller.ExitCode -ne 0) { throw "Uninstaller failed with exit code $($uninstaller.ExitCode)" }
       - name: Smoke test macOS app
         if: runner.os == 'macOS'
-        run: '"dist/Codex Sync Desktop.app/Contents/MacOS/Codex Sync Desktop" --smoke-onboarding'
+        run: |
+          "dist/Codex Sync Desktop.app/Contents/MacOS/Codex Sync Desktop" --smoke-onboarding
+          "dist/Codex Sync Desktop.app/Contents/MacOS/Codex Sync Desktop" --smoke-import-preview
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh

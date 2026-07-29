@@ -121,38 +121,59 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
     for entry in entries:
         relative = _safe_relative(str(entry.get("path", "")))
         source, destination = _resolve_manifest_paths(source_root, codex_home, relative, format_version)
-        if not source.exists():
-            plan.items.append(ImportItem("missing-source", relative, source, destination))
-            continue
-        actual_hash = sha256_file(source)
-        expected_hash = str(entry.get("sha256", ""))
-        if expected_hash and actual_hash != expected_hash:
-            plan.items.append(ImportItem("invalid-source-hash", relative, source, destination, detail=f"expected {expected_hash}, got {actual_hash}"))
-            continue
         task_id = str(entry.get("task_id") or "").strip()
         source_title = str(entry.get("title") or "").strip()[:500]
         if not is_usable_title(source_title):
             source_title = ""
+        local_title = local_titles.get(task_id, "") if task_id else ""
+        item_metadata = {
+            "task_id": task_id,
+            "source_title": source_title,
+            "local_title": local_title,
+        }
+        if not source.exists():
+            plan.items.append(ImportItem("missing-source", relative, source, destination, **item_metadata))
+            continue
+        actual_hash = sha256_file(source)
+        expected_hash = str(entry.get("sha256", ""))
+        if expected_hash and actual_hash != expected_hash:
+            plan.items.append(ImportItem(
+                "invalid-source-hash",
+                relative,
+                source,
+                destination,
+                detail=f"expected {expected_hash}, got {actual_hash}",
+                **item_metadata,
+            ))
+            continue
         if task_id and source_title and local_titles.get(task_id) != source_title:
             plan.title_updates[task_id] = source_title
         if not destination.exists():
-            plan.items.append(ImportItem("copy", relative, source, destination))
+            plan.items.append(ImportItem("copy", relative, source, destination, **item_metadata))
             continue
         if (
             sha256_file(destination) == actual_hash
             or sanitized_sha256_file(destination) == actual_hash
             or conversation_is_prefix(source, destination)
         ):
-            plan.items.append(ImportItem("identical", relative, source, destination))
+            plan.items.append(ImportItem("identical", relative, source, destination, **item_metadata))
             continue
         merged_content, merge = _merge_session_bytes(destination, source)
         if merge["changes_from_source"] == 0:
-            plan.items.append(ImportItem("identical", relative, source, destination, detail="semantic match"))
+            plan.items.append(ImportItem(
+                "identical",
+                relative,
+                source,
+                destination,
+                detail="semantic match",
+                **item_metadata,
+            ))
             continue
         plan.items.append(ImportItem(
             "conflict", relative, source, destination,
             merged_content=merged_content,
             detail=f"merge {merge['source_additions']} additions and {merge['source_replacements']} richer records",
+            **item_metadata,
         ))
     return plan
 
