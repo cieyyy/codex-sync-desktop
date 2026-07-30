@@ -275,3 +275,9 @@ Before delivering any UI code, verify:
 - Browser authentication runs in the background with visible progress; completion is shown only after `gh auth status` passes.
 - A device with zero local sessions and no `session_index.jsonl` is a normal empty state, not a failure.
 - First pull automatically establishes the current branch's upstream when the remote branch exists.
+
+## Header Activity Status
+
+- Long activity messages remain single-line and expose a visible horizontal scrollbar instead of truncating device names.
+- New status messages reset to the leading edge; users can scroll, select, and copy the complete text.
+- The status surface keeps the existing navy/cyan hierarchy, with danger color reserved for failures.

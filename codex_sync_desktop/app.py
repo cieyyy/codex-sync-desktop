@@ -80,7 +80,7 @@ class CodexSyncApp(tk.Tk):
 
     def report_callback_exception(self, exc_type: type[BaseException], exc: BaseException, trace: Any) -> None:
         self.logger.error("界面操作失败：%s", exc, exc_info=(exc_type, exc, trace))
-        self.busy_label.configure(text="失败")
+        self._set_status_text("失败", failed=True)
         messagebox.showerror("界面操作失败", str(exc))
 
     def _configure_logging(self) -> None:
@@ -124,6 +124,12 @@ class CodexSyncApp(tk.Tk):
         style.configure("SidebarMuted.TLabel", foreground=COLORS["cyan"], background=COLORS["sidebar"], font=body_font)
         style.configure("Status.TLabel", foreground=COLORS["primary"], background=COLORS["surface_alt"], padding=(12, 7), font=body_font)
         style.configure("Error.Status.TLabel", foreground=COLORS["danger"], background=COLORS["surface_alt"], padding=(12, 7), font=body_font)
+        style.configure("Status.TEntry", foreground=COLORS["primary"], fieldbackground=COLORS["surface_alt"], bordercolor=COLORS["border"], padding=(12, 7), font=body_font)
+        style.map("Status.TEntry", foreground=[("readonly", COLORS["primary"])], fieldbackground=[("readonly", COLORS["surface_alt"])], bordercolor=[("focus", COLORS["border"])])
+        style.configure("Error.Status.TEntry", foreground=COLORS["danger"], fieldbackground=COLORS["surface_alt"], bordercolor=COLORS["danger"], padding=(12, 7), font=body_font)
+        style.map("Error.Status.TEntry", foreground=[("readonly", COLORS["danger"])], fieldbackground=[("readonly", COLORS["surface_alt"])])
+        style.configure("Status.Horizontal.TScrollbar", background=COLORS["secondary"], troughcolor=COLORS["surface_alt"], arrowcolor=COLORS["cyan"], bordercolor=COLORS["border"])
+        style.map("Status.Horizontal.TScrollbar", background=[("active", COLORS["primary"]), ("pressed", COLORS["primary_pressed"])])
         style.configure("TButton", foreground=COLORS["text"], background=COLORS["secondary"], padding=(12, 8), borderwidth=1, font=body_font)
         style.map("TButton", background=[("disabled", COLORS["button_disabled"]), ("pressed", COLORS["secondary_pressed"]), ("active", COLORS["secondary_hover"])], foreground=[("disabled", COLORS["text_disabled"]), ("!disabled", COLORS["text"])])
         style.configure("Accent.TButton", foreground=COLORS["background"], background=COLORS["primary"], padding=(14, 9), borderwidth=1, font=body_font)
@@ -154,8 +160,27 @@ class CodexSyncApp(tk.Tk):
         status.pack(side="right")
         self.task_progress = ttk.Progressbar(status, mode="indeterminate", length=140, style="Tech.Horizontal.TProgressbar")
         self.task_progress.pack(side="left", padx=(0, 10))
-        self.busy_label = ttk.Label(status, text="就绪", style="Status.TLabel", width=28, anchor="center")
-        self.busy_label.pack(side="left")
+        status_text = ttk.Frame(status)
+        status_text.pack(side="left")
+        self.busy_text = tk.StringVar(value="就绪")
+        self.busy_label = ttk.Entry(
+            status_text,
+            textvariable=self.busy_text,
+            state="readonly",
+            style="Status.TEntry",
+            width=34,
+            justify="left",
+            takefocus=False,
+        )
+        self.busy_label.pack(fill="x")
+        self.busy_scroll = ttk.Scrollbar(
+            status_text,
+            orient="horizontal",
+            command=self.busy_label.xview,
+            style="Status.Horizontal.TScrollbar",
+        )
+        self.busy_scroll.pack(fill="x", pady=(2, 0))
+        self.busy_label.configure(xscrollcommand=self.busy_scroll.set)
         shell = ttk.Frame(self.chrome.body, padding=(20, 0, 20, 20))
         shell.pack(fill="both", expand=True)
         sidebar = ttk.Frame(shell, style="Sidebar.TFrame", padding=(0, 18))
@@ -405,7 +430,7 @@ class CodexSyncApp(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(content)
         self.update_idletasks()
-        self.busy_label.configure(text="已复制")
+        self._set_status_text("已复制")
 
     def refresh_sources(self) -> None:
         vault = self.settings.vault
@@ -790,14 +815,21 @@ class CodexSyncApp(tk.Tk):
     def _set_task_state(self, text: str, *, active: bool, failed: bool = False) -> None:
         if active:
             self.task_progress.start(12)
-            self.busy_label.configure(text=text, style="Status.TLabel")
         else:
             self.task_progress.stop()
             self.task_progress.configure(value=0)
-            self.busy_label.configure(text=text, style="Error.Status.TLabel" if failed else "Status.TLabel")
+        self._set_status_text(text, failed=failed)
         for window in self.winfo_children():
             if isinstance(window, OnboardingWizard):
                 window.set_task_state(text, active=active, failed=failed)
+
+    def _set_status_text(self, text: str, *, failed: bool = False) -> None:
+        self.busy_text.set(text)
+        self.busy_label.configure(style="Error.Status.TEntry" if failed else "Status.TEntry")
+        self.after_idle(self._reset_status_scroll)
+
+    def _reset_status_scroll(self) -> None:
+        self.busy_label.xview_moveto(0.0)
 
     def _poll_messages(self) -> None:
         try:
@@ -853,7 +885,7 @@ class CodexSyncApp(tk.Tk):
         finally:
             handler.release()
         self.log_text.delete("1.0", "end")
-        self.busy_label.configure(text="日志已清理")
+        self._set_status_text("日志已清理")
 
     def maybe_show_onboarding(self) -> None:
         if not self.settings.onboarding_complete:

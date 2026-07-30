@@ -55,6 +55,28 @@ class TaskFeedbackTests(TestCase):
 
         fake_app.after_idle.assert_called_once_with(focus_set)
 
+    def test_long_status_text_uses_scrollable_entry_and_resets_to_start(self):
+        fake_app = SimpleNamespace(
+            busy_text=Mock(),
+            busy_label=Mock(),
+            after_idle=Mock(),
+            _reset_status_scroll=Mock(),
+        )
+        text = "正在分析来源设备 desktop-0789039 的全部会话"
+
+        CodexSyncApp._set_status_text(fake_app, text)
+
+        fake_app.busy_text.set.assert_called_once_with(text)
+        fake_app.busy_label.configure.assert_called_once_with(style="Status.TEntry")
+        fake_app.after_idle.assert_called_once_with(fake_app._reset_status_scroll)
+
+    def test_status_scroll_returns_to_leading_text(self):
+        fake_app = SimpleNamespace(busy_label=Mock())
+
+        CodexSyncApp._reset_status_scroll(fake_app)
+
+        fake_app.busy_label.xview_moveto.assert_called_once_with(0.0)
+
 
 class WindowsChromeTests(TestCase):
     @patch("codex_sync_desktop.window_chrome.os.name", "posix")
