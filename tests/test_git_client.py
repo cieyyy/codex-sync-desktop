@@ -129,6 +129,8 @@ class GitClientEnvironmentTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.output, "")
         self.assertEqual(result.returncode, 1)
+        self.assertEqual(mocked_run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(mocked_run.call_args.kwargs["errors"], "replace")
 
     @patch("codex_sync_desktop.core.git_client.subprocess.run")
     @patch("codex_sync_desktop.core.git_client.sys.platform", "win32")

@@ -235,7 +235,8 @@ def run(command: Sequence[str], cwd: Path | None = None, timeout: int = 120, pro
     try:
         result = subprocess.run(
             list(command), cwd=str(cwd) if cwd else None, capture_output=True,
-            text=True, timeout=timeout, check=False, env=command_environment(proxy_url=proxy_url),
+            text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False,
+            env=command_environment(proxy_url=proxy_url),
             **hidden_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

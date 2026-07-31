@@ -594,29 +594,21 @@ def list_private_repositories(
         [
             "gh",
             "api",
+            "--paginate",
             "--method",
             "GET",
-            "user/repos",
-            "-f",
-            "affiliation=owner,collaborator,organization_member",
-            "-f",
-            "visibility=private",
-            "-f",
-            "sort=full_name",
-            "-f",
-            "per_page=100",
+            "user/repos?affiliation=owner%2Ccollaborator%2Corganization_member&visibility=private&sort=full_name&per_page=100",
+            "--jq",
+            ".[].full_name",
         ],
         timeout=60,
         proxy_url=proxy,
     )
     _require_ok(result, "读取 GitHub 私有仓库失败")
-    repositories = json.loads(result.output)
-    if not isinstance(repositories, list):
-        raise RuntimeError("GitHub 私有仓库列表格式无效")
     names = {
-        str(item.get("full_name") or "").strip()
-        for item in repositories
-        if isinstance(item, dict) and item.get("private") is True
+        line.strip()
+        for line in result.output.splitlines()
+        if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", line.strip())
     }
     return sorted((name for name in names if name), key=str.casefold)
 

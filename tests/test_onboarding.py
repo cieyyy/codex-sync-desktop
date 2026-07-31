@@ -204,13 +204,7 @@ class PrivateRepositorySetupTests(TestCase):
     def test_lists_only_private_repositories_available_to_account(self, mocked_run, _auth):
         mocked_run.return_value = CommandResult(
             True,
-            json.dumps(
-                [
-                    {"full_name": "buyer/zeta", "private": True},
-                    {"full_name": "team/alpha", "private": True},
-                    {"full_name": "buyer/public", "private": False},
-                ]
-            ),
+            "buyer/zeta\nteam/alpha\nwarning: ignored output\nbuyer/zeta",
             0,
         )
 
@@ -218,7 +212,13 @@ class PrivateRepositorySetupTests(TestCase):
 
         self.assertEqual(repositories, ["buyer/zeta", "team/alpha"])
         command = mocked_run.call_args.args[0]
-        self.assertEqual(command[:5], ["gh", "api", "--method", "GET", "user/repos"])
+        self.assertEqual(command[:5], ["gh", "api", "--paginate", "--method", "GET"])
+        self.assertIn("--jq", command)
+
+    @patch("codex_sync_desktop.core.onboarding.github_auth_status", return_value=CommandResult(True, "", 0))
+    @patch("codex_sync_desktop.core.onboarding.run", return_value=CommandResult(True, "", 0))
+    def test_empty_private_repository_output_is_a_valid_empty_list(self, _run, _auth):
+        self.assertEqual(list_private_repositories(), [])
 
     @patch("codex_sync_desktop.core.onboarding.github_auth_status", return_value=CommandResult(True, "", 0))
     @patch("codex_sync_desktop.core.onboarding.run")
