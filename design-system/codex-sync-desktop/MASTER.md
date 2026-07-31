@@ -281,3 +281,10 @@ Before delivering any UI code, verify:
 - Long activity messages remain single-line and expose a visible horizontal scrollbar instead of truncating device names.
 - New status messages reset to the leading edge; users can scroll, select, and copy the complete text.
 - The status surface keeps the existing navy/cyan hierarchy, with danger color reserved for failures.
+
+## GitHub Browser Authorization
+
+- First-time GitHub login uses a centered confirmation owned by the setup wizard, then hands authentication to the operating system's default browser.
+- Credentials and two-factor verification are entered only on GitHub's official page; the desktop app must state that it never reads or stores them.
+- Keep an indeterminate progress indicator visible while authorization is pending and provide a persistent “重新打开授权页” recovery action.
+- Copy the one-time device code automatically, recheck authentication after browser completion, and configure Git credentials before advancing.

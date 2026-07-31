@@ -16,6 +16,7 @@ from codex_sync_desktop.core.onboarding import (
     install_windows_portable_gh,
     launch_dependency_install,
     launch_github_login,
+    open_default_browser,
     select_macos_gh_installer_asset,
     select_windows_gh_portable_asset,
     select_windows_git_installer_asset,
@@ -68,20 +69,31 @@ class ProxyValidationTests(TestCase):
     def test_windows_github_login_waits_for_web_auth_and_rechecks_status(self, mocked_run, _which):
         mocked_run.side_effect = [
             CommandResult(True, "gh version", 0),
+            CommandResult(False, "not logged in", 1),
             CommandResult(True, "browser authentication completed", 0),
             CommandResult(True, "Logged in to github.com", 0),
+            CommandResult(True, "credentials ready", 0),
         ]
         with tempfile.TemporaryDirectory() as directory:
-            result = launch_github_login(Path(directory), "http://127.0.0.1:7890")
+            result = launch_github_login(
+                Path(directory),
+                "http://127.0.0.1:7890",
+                browser_opener=lambda _url: CommandResult(True, "default browser opened", 0),
+            )
 
         self.assertTrue(result.ok)
-        command = mocked_run.call_args_list[1].args[0]
+        command = mocked_run.call_args_list[2].args[0]
         self.assertEqual(command[0], r"C:\Tools\gh.exe")
         self.assertIn("--web", command)
+        self.assertIn("--clipboard", command)
         self.assertNotIn("powershell.exe", command)
         self.assertEqual(
-            mocked_run.call_args_list[-1].args[0],
+            mocked_run.call_args_list[-2].args[0],
             [r"C:\Tools\gh.exe", "auth", "status"],
+        )
+        self.assertEqual(
+            mocked_run.call_args_list[-1].args[0],
+            [r"C:\Tools\gh.exe", "auth", "setup-git"],
         )
 
     @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=r"C:\Tools\gh.exe")
@@ -89,13 +101,99 @@ class ProxyValidationTests(TestCase):
     def test_github_login_reports_browser_auth_failure(self, mocked_run, _which):
         mocked_run.side_effect = [
             CommandResult(True, "gh version", 0),
+            CommandResult(False, "not logged in", 1),
             CommandResult(False, "browser authorization was cancelled", 1),
         ]
 
-        result = launch_github_login(Path("app-home"))
+        result = launch_github_login(
+            Path("app-home"),
+            browser_opener=lambda _url: CommandResult(True, "default browser opened", 0),
+        )
 
         self.assertFalse(result.ok)
         self.assertIn("cancelled", result.output)
+
+    @patch("codex_sync_desktop.core.onboarding.webbrowser.get")
+    def test_default_browser_uses_system_controller(self, mocked_get):
+        controller = mocked_get.return_value
+        controller.name = "system-default"
+        controller.open.return_value = True
+
+        result = open_default_browser("https://github.com/login/device")
+
+        self.assertTrue(result.ok)
+        controller.open.assert_called_once_with(
+            "https://github.com/login/device",
+            new=2,
+            autoraise=True,
+        )
+
+    def test_default_browser_rejects_non_github_page(self):
+        result = open_default_browser("https://example.com/fake-login")
+
+        self.assertFalse(result.ok)
+        self.assertIn("安全检查失败", result.output)
+
+    @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=r"C:\Tools\gh.exe")
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_existing_login_skips_browser_and_repairs_git_credentials(self, mocked_run, _which):
+        mocked_run.side_effect = [
+            CommandResult(True, "gh version", 0),
+            CommandResult(True, "Logged in to github.com", 0),
+            CommandResult(True, "credentials ready", 0),
+        ]
+        opened: list[str] = []
+
+        result = launch_github_login(
+            Path("app-home"),
+            browser_opener=lambda url: opened.append(url) or CommandResult(True, "", 0),
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(opened, [])
+        self.assertNotIn(
+            "login",
+            [part for call in mocked_run.call_args_list for part in call.args[0]],
+        )
+
+    @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=r"C:\Tools\gh.exe")
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_login_stops_with_recovery_reason_when_default_browser_fails(self, mocked_run, _which):
+        mocked_run.side_effect = [
+            CommandResult(True, "gh version", 0),
+            CommandResult(False, "not logged in", 1),
+        ]
+
+        result = launch_github_login(
+            Path("app-home"),
+            browser_opener=lambda _url: CommandResult(False, "no default browser", 1),
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.output, "no default browser")
+        self.assertEqual(mocked_run.call_count, 2)
+
+    @patch("codex_sync_desktop.core.onboarding.shutil.which", return_value=r"C:\Tools\gh.exe")
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_clipboard_failure_retries_web_login_without_clipboard_flag(self, mocked_run, _which):
+        mocked_run.side_effect = [
+            CommandResult(True, "gh version", 0),
+            CommandResult(False, "not logged in", 1),
+            CommandResult(False, "clipboard is unavailable", 1),
+            CommandResult(True, "browser authentication completed", 0),
+            CommandResult(True, "Logged in to github.com", 0),
+            CommandResult(True, "credentials ready", 0),
+        ]
+
+        result = launch_github_login(
+            Path("app-home"),
+            browser_opener=lambda _url: CommandResult(True, "default browser opened", 0),
+        )
+
+        self.assertTrue(result.ok)
+        retry = mocked_run.call_args_list[3].args[0]
+        self.assertIn("--web", retry)
+        self.assertNotIn("--clipboard", retry)
 
 
 class PrivateRepositorySetupTests(TestCase):

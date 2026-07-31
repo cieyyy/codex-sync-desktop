@@ -12,6 +12,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import webbrowser
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -217,7 +218,28 @@ def github_setup_status(proxy_url: str = "", app_home: Path | None = None) -> di
     }
 
 
-def launch_github_login(app_home: Path, proxy_url: str = "") -> CommandResult:
+def open_default_browser(url: str) -> CommandResult:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "github.com":
+        return CommandResult(False, "安全检查失败：只允许打开 GitHub 官方 HTTPS 页面", 1)
+    try:
+        controller = webbrowser.get()
+        opened = controller.open(url, new=2, autoraise=True)
+    except webbrowser.Error as exc:
+        return CommandResult(False, f"系统没有可用的默认浏览器：{exc}", 1)
+    except OSError as exc:
+        return CommandResult(False, f"默认浏览器启动失败：{exc}", 1)
+    if not opened:
+        return CommandResult(False, "系统默认浏览器没有接受打开请求", 1)
+    name = str(getattr(controller, "name", "") or controller.__class__.__name__)
+    return CommandResult(True, f"已使用系统默认浏览器打开 GitHub（{name}）", 0)
+
+
+def launch_github_login(
+    app_home: Path,
+    proxy_url: str = "",
+    browser_opener: Callable[[str], CommandResult] | None = None,
+) -> CommandResult:
     proxy = validate_proxy_url(proxy_url)
     gh_path = _github_cli_path(app_home)
     gh_probe = run([str(gh_path or "gh"), "--version"], timeout=10, proxy_url=proxy)
@@ -225,26 +247,50 @@ def launch_github_login(app_home: Path, proxy_url: str = "") -> CommandResult:
         detail = _probe_reason(gh_probe, "未找到 GitHub CLI")
         raise FileNotFoundError(f"GitHub CLI 未安装或已损坏：{detail}。请点击“自动安装/修复必要工具”")
     app_home.mkdir(parents=True, exist_ok=True)
+    existing = run([str(gh_path), "auth", "status"], timeout=20, proxy_url=proxy)
+    if existing.ok:
+        setup = run([str(gh_path), "auth", "setup-git"], timeout=30, proxy_url=proxy)
+        if setup.ok:
+            return CommandResult(True, existing.output or "GitHub 已登录，Git 凭据已配置", 0)
+        return CommandResult(False, setup.output or "GitHub 已登录，但 Git 凭据配置失败", setup.returncode)
+
+    opener = browser_opener or open_default_browser
+    browser = opener(GITHUB_DEVICE_URL)
+    if not browser.ok:
+        return browser
+    login_command = [
+        str(gh_path),
+        "auth",
+        "login",
+        "--hostname",
+        "github.com",
+        "--git-protocol",
+        "https",
+        "--web",
+        "--clipboard",
+    ]
     login = run(
-        [
-            str(gh_path),
-            "auth",
-            "login",
-            "--hostname",
-            "github.com",
-            "--git-protocol",
-            "https",
-            "--web",
-        ],
+        login_command,
         timeout=600,
         proxy_url=proxy,
     )
+    if not login.ok and "clipboard" in login.output.lower():
+        login = run(
+            [item for item in login_command if item != "--clipboard"],
+            timeout=600,
+            proxy_url=proxy,
+        )
     if not login.ok:
         return login
     verified = run([str(gh_path), "auth", "status"], timeout=20, proxy_url=proxy)
     if verified.ok:
-        return CommandResult(True, verified.output or login.output, 0)
-    output = "\n".join(part for part in (login.output, verified.output) if part)
+        setup = run([str(gh_path), "auth", "setup-git"], timeout=30, proxy_url=proxy)
+        if not setup.ok:
+            output = "\n".join(part for part in (verified.output, setup.output) if part)
+            return CommandResult(False, output or "GitHub 登录成功，但 Git 凭据配置失败", setup.returncode)
+        output = "\n".join(part for part in (browser.output, verified.output or login.output) if part)
+        return CommandResult(True, output, 0)
+    output = "\n".join(part for part in (browser.output, login.output, verified.output) if part)
     return CommandResult(False, output or "GitHub 返回成功，但登录状态复检未通过", verified.returncode)
 
 

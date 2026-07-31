@@ -9,6 +9,7 @@ from typing import Any
 from .core.onboarding import (
     GH_DOWNLOAD_URL,
     GIT_DOWNLOAD_URL,
+    GITHUB_DEVICE_URL,
     GITHUB_SIGNUP_URL,
     ConnectivityResult,
     DependencyInstallResult,
@@ -20,6 +21,7 @@ from .core.onboarding import (
     github_setup_status,
     launch_dependency_install,
     launch_github_login,
+    open_default_browser,
     validate_proxy_url,
 )
 from .core.git_client import CommandResult
@@ -135,11 +137,12 @@ class OnboardingWizard(tk.Toplevel):
         self.network_status.pack(anchor="w", pady=(12, 0))
 
     def _account_page(self, page: ttk.Frame) -> None:
-        self._heading(page, "准备 GitHub 账号", "没有账号时先打开注册页面；已有账号时点击登录。GitHub 会在浏览器中要求你确认一次设备授权。")
+        self._heading(page, "准备 GitHub 账号", "点击登录后，软件会调用系统默认浏览器。账号、密码和二次验证只在 GitHub 官方页面输入，本软件不会读取。")
         actions = ttk.Frame(page, style="Panel.TFrame")
         actions.pack(fill="x", pady=(0, 18))
         ttk.Button(actions, text="没有账号：打开注册", command=lambda: webbrowser.open(GITHUB_SIGNUP_URL)).pack(side="left")
         ttk.Button(actions, text="打开 GitHub 登录", style="Accent.TButton", command=self._launch_login).pack(side="left", padx=8)
+        ttk.Button(actions, text="重新打开授权页", command=self._reopen_login_page).pack(side="left")
         ttk.Button(actions, text="重新检测", command=self._refresh_account).pack(side="left")
         self.account_tree = ttk.Treeview(page, columns=("item", "status", "action"), show="headings", height=5)
         for name, title, width in (("item", "检查项", 180), ("status", "状态", 120), ("action", "处理方法", 390)):
@@ -151,7 +154,7 @@ class OnboardingWizard(tk.Toplevel):
         ttk.Button(downloads, text="自动安装/修复必要工具", style="Accent.TButton", command=self._install_dependencies).pack(side="left")
         ttk.Button(downloads, text="下载 Git", command=lambda: webbrowser.open(GIT_DOWNLOAD_URL)).pack(side="left")
         ttk.Button(downloads, text="下载 GitHub CLI", command=lambda: webbrowser.open(GH_DOWNLOAD_URL)).pack(side="left", padx=8)
-        self.dependency_status = ttk.Label(page, text="缺少工具时软件会自动安装；系统安装方式不可用时，自动下载并校验 GitHub 官方安装包。", style="PanelMuted.TLabel", wraplength=700, justify="left")
+        self.dependency_status = ttk.Label(page, text="全新设备无需预先配置 GitHub。登录时会自动复制一次性验证码并打开官方授权页。", style="PanelMuted.TLabel", wraplength=700, justify="left")
         self.dependency_status.pack(anchor="w", pady=(10, 0))
 
     def _repository_page(self, page: ttk.Frame) -> None:
@@ -244,7 +247,15 @@ class OnboardingWizard(tk.Toplevel):
         except ValueError as exc:
             messagebox.showerror("无法打开登录", str(exc), parent=self)
             return
-        self.dependency_status.configure(text="正在打开默认浏览器并等待 GitHub 授权；完成前请不要关闭此向导。")
+        if not messagebox.askokcancel(
+            "登录 GitHub",
+            "软件将使用系统默认浏览器打开 GitHub 官方设备授权页，并自动复制一次性验证码。\n\n"
+            "请只在 GitHub 页面输入账号、密码和二次验证码。本软件不会读取或保存这些信息。\n\n"
+            "授权完成前请保持此向导打开。",
+            parent=self,
+        ):
+            return
+        self.dependency_status.configure(text="正在打开系统默认浏览器并等待授权。验证码会自动复制；如页面未打开，请点击“重新打开授权页”。")
 
         def work() -> CommandResult:
             result = launch_github_login(self.app.store.app_home, proxy)
@@ -267,7 +278,14 @@ class OnboardingWizard(tk.Toplevel):
         messagebox.showinfo("GitHub 登录成功", "浏览器授权已完成，登录状态复检通过。", parent=self)
 
     def _github_login_failed(self, exc: Exception) -> None:
-        self.dependency_status.configure(text=f"GitHub 登录失败：{exc}\n请检查浏览器授权、网络或代理后重试。")
+        self.dependency_status.configure(text=f"GitHub 登录失败：{exc}\n请重试登录；浏览器未打开时点击“重新打开授权页”。")
+
+    def _reopen_login_page(self) -> None:
+        result = open_default_browser(GITHUB_DEVICE_URL)
+        if result.ok:
+            self.dependency_status.configure(text=f"{result.output}。请粘贴自动复制的一次性验证码并完成授权。")
+            return
+        messagebox.showerror("无法打开默认浏览器", result.output, parent=self)
 
     def _install_dependencies(self) -> None:
         if not messagebox.askyesno(
