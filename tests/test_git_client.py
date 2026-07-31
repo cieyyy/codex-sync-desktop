@@ -12,6 +12,8 @@ from codex_sync_desktop.core.git_client import (
     command_environment,
     compact_failure_reason,
     hidden_window_kwargs,
+    github_https_remote,
+    is_repository_access_failure,
     is_transient_push_failure,
     run,
     summarize_pull,
@@ -170,8 +172,65 @@ Fast-forward
             "连接在上传时中断；软件已自动使用 HTTP/1.1 重试，但仍未成功，请检查网络后重试。",
         )
 
+    def test_repository_access_failure_has_actionable_reason(self):
+        output = "Please make sure you have the correct access rights\nfatal: Could not read from remote repository."
+
+        self.assertTrue(is_repository_access_failure(output))
+        self.assertEqual(
+            compact_failure_reason(output),
+            "无法访问 GitHub 私有仓库；请在首次配置向导重新登录，并确认当前账号拥有该仓库权限。",
+        )
+
+    def test_converts_github_ssh_remote_to_https(self):
+        self.assertEqual(
+            github_https_remote("git@github.com:buyer/private-vault.git"),
+            "https://github.com/buyer/private-vault.git",
+        )
+
 
 class GitPushRecoveryTests(unittest.TestCase):
+    @patch("codex_sync_desktop.core.git_client.github_auth_status")
+    @patch("codex_sync_desktop.core.git_client.run")
+    def test_pull_repairs_github_credentials_and_ssh_remote_once(self, mocked_run, mocked_auth):
+        mocked_auth.return_value = CommandResult(True, "logged in", 0)
+        mocked_run.side_effect = [
+            CommandResult(False, "fatal: Could not read from remote repository.", 128),
+            CommandResult(True, "git@github.com:buyer/private-vault.git", 0),
+            CommandResult(True, "credentials ready", 0),
+            CommandResult(True, "", 0),
+            CommandResult(True, "Already up to date.", 0),
+        ]
+
+        result = VaultGit(Path("/vault")).pull()
+
+        self.assertTrue(result.ok)
+        commands = [call.args[0] for call in mocked_run.call_args_list]
+        self.assertIn(["gh", "auth", "setup-git"], commands)
+        self.assertIn(
+            ["git", "remote", "set-url", "origin", "https://github.com/buyer/private-vault.git"],
+            commands,
+        )
+        self.assertEqual(commands.count(["git", "pull", "--rebase", "--autostash"]), 2)
+
+    @patch("codex_sync_desktop.core.git_client.github_auth_status")
+    @patch("codex_sync_desktop.core.git_client.run")
+    def test_pull_reports_login_requirement_when_automatic_repair_cannot_authenticate(
+        self,
+        mocked_run,
+        mocked_auth,
+    ):
+        mocked_auth.return_value = CommandResult(False, "not logged in", 1)
+        mocked_run.side_effect = [
+            CommandResult(False, "fatal: Could not read from remote repository.", 128),
+            CommandResult(True, "https://github.com/buyer/private-vault.git", 0),
+        ]
+
+        result = VaultGit(Path("/vault")).pull()
+
+        self.assertFalse(result.ok)
+        self.assertIn("GitHub CLI 尚未登录", result.output)
+        self.assertNotIn(["gh", "auth", "setup-git"], [call.args[0] for call in mocked_run.call_args_list])
+
     @patch("codex_sync_desktop.core.git_client.run")
     def test_pull_sets_upstream_and_retries_when_tracking_is_missing(self, mocked_run):
         mocked_run.side_effect = [

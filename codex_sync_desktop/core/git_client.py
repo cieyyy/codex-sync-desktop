@@ -91,6 +91,14 @@ TRANSIENT_PUSH_MARKERS = (
     "network is unreachable",
 )
 
+REPOSITORY_ACCESS_MARKERS = (
+    "could not read from remote repository",
+    "authentication failed",
+    "permission denied",
+    "repository not found",
+    "host key verification failed",
+)
+
 
 def hidden_window_kwargs(platform_name: str | None = None) -> dict[str, object]:
     """Return subprocess options that prevent console flashes on Windows."""
@@ -140,6 +148,8 @@ def compact_failure_reason(output: str, fallback: str = "Git 命令执行失败"
         return "远端已有新提交，请先拉取仓库后重试。"
     if "authentication failed" in lowered or "permission denied" in lowered:
         return "GitHub 身份认证失败，请重新登录或检查仓库权限。"
+    if "could not read from remote repository" in lowered:
+        return "无法访问 GitHub 私有仓库；请在首次配置向导重新登录，并确认当前账号拥有该仓库权限。"
     if is_transient_push_failure(output):
         return "连接在上传时中断；软件已自动使用 HTTP/1.1 重试，但仍未成功，请检查网络后重试。"
     markers = ("fatal:", "error:", "failed", "denied", "authentication", "could not", "conflict")
@@ -153,6 +163,26 @@ def compact_failure_reason(output: str, fallback: str = "Git 命令执行失败"
 def is_transient_push_failure(output: str) -> bool:
     lowered = output.lower()
     return any(marker in lowered for marker in TRANSIENT_PUSH_MARKERS)
+
+
+def is_repository_access_failure(output: str) -> bool:
+    lowered = output.lower()
+    return any(marker in lowered for marker in REPOSITORY_ACCESS_MARKERS)
+
+
+def github_https_remote(remote: str) -> str:
+    value = remote.strip()
+    scp_match = re.fullmatch(r"git@github\.com:([^/\s]+)/([^/\s]+?)(?:\.git)?", value, re.IGNORECASE)
+    if scp_match:
+        return f"https://github.com/{scp_match.group(1)}/{scp_match.group(2)}.git"
+    ssh_match = re.fullmatch(
+        r"ssh://git@github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?",
+        value,
+        re.IGNORECASE,
+    )
+    if ssh_match:
+        return f"https://github.com/{ssh_match.group(1)}/{ssh_match.group(2)}.git"
+    return value
 
 
 def is_missing_upstream(output: str) -> bool:
@@ -247,6 +277,17 @@ class VaultGit:
 
     def pull(self) -> CommandResult:
         result = run(["git", "pull", "--rebase", "--autostash"], self.path, timeout=300, proxy_url=self.proxy_url)
+        if not result.ok and is_repository_access_failure(result.output):
+            repair = self._repair_github_access()
+            if repair.ok:
+                result = run(
+                    ["git", "pull", "--rebase", "--autostash"],
+                    self.path,
+                    timeout=300,
+                    proxy_url=self.proxy_url,
+                )
+            elif repair.output:
+                result = CommandResult(False, "\n".join((result.output, repair.output)), result.returncode)
         if result.ok:
             return result
         if is_missing_remote_branch(result.output):
@@ -273,6 +314,33 @@ class VaultGit:
         if not tracked.ok:
             return tracked
         return run(["git", "pull", "--rebase", "--autostash"], self.path, timeout=300, proxy_url=self.proxy_url)
+
+    def _repair_github_access(self) -> CommandResult:
+        remote = run(["git", "remote", "get-url", "origin"], self.path, timeout=20, proxy_url=self.proxy_url)
+        if not remote.ok:
+            return remote
+        remote_url = remote.output.strip()
+        if "github.com" not in remote_url.lower():
+            return CommandResult(False, "远程仓库不是 GitHub 地址，软件未自动修改。", 1)
+
+        auth = github_auth_status(self.proxy_url)
+        if not auth.ok:
+            return CommandResult(False, "GitHub CLI 尚未登录；请打开首次配置向导完成 GitHub 登录。", auth.returncode)
+        setup = run(["gh", "auth", "setup-git"], timeout=30, proxy_url=self.proxy_url)
+        if not setup.ok:
+            return CommandResult(False, f"GitHub 凭据配置失败：{setup.output}", setup.returncode)
+
+        https_remote = github_https_remote(remote_url)
+        if https_remote != remote_url:
+            changed = run(
+                ["git", "remote", "set-url", "origin", https_remote],
+                self.path,
+                timeout=20,
+                proxy_url=self.proxy_url,
+            )
+            if not changed.ok:
+                return changed
+        return CommandResult(True, "GitHub 凭据已重新配置", 0)
 
     def status(self) -> CommandResult:
         return run(["git", "status", "--short", "--branch"], self.path, proxy_url=self.proxy_url)
