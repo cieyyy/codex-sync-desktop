@@ -28,7 +28,7 @@ from .core.onboarding import (
 )
 from .core.git_client import VaultGit
 from .core.git_client import CommandResult
-from .ui_theme import COLORS, center_window
+from .ui_theme import COLORS, center_window, vertical_scrollbar_required
 
 
 class OnboardingWizard(tk.Toplevel):
@@ -55,6 +55,8 @@ class OnboardingWizard(tk.Toplevel):
         self.repository_reference = tk.StringVar(value=existing_remote)
         self.repositories_loaded = False
         self.repositories_loading = False
+        self._page_scrollbar_visible = False
+        self._page_scroll_update_pending = False
         default_vault = app.settings.vault_path or str(Path.home() / "Documents" / "CodexSync" / "codex-sync-vault")
         self.local_path = tk.StringVar(value=default_vault)
         self.codex_home = tk.StringVar(value=app.settings.codex_home)
@@ -83,14 +85,20 @@ class OnboardingWizard(tk.Toplevel):
             borderwidth=0,
             highlightthickness=0,
         )
-        page_scrollbar = ttk.Scrollbar(page_area, orient="vertical", command=self.page_canvas.yview)
-        self.page_canvas.configure(yscrollcommand=page_scrollbar.set)
-        page_scrollbar.pack(side="right", fill="y")
-        self.page_canvas.pack(side="left", fill="both", expand=True)
+        self.page_scrollbar = ttk.Scrollbar(
+            page_area,
+            orient="vertical",
+            command=self.page_canvas.yview,
+            style="Wizard.Vertical.TScrollbar",
+        )
+        self.page_canvas.configure(yscrollcommand=self.page_scrollbar.set)
+        page_area.columnconfigure(0, weight=1)
+        page_area.rowconfigure(0, weight=1)
+        self.page_canvas.grid(row=0, column=0, sticky="nsew")
         self.page_host = ttk.Frame(self.page_canvas, style="Panel.TFrame", padding=22)
         self.page_window = self.page_canvas.create_window((0, 0), window=self.page_host, anchor="nw")
         self.page_canvas.bind("<Configure>", self._resize_page_host)
-        self.page_host.bind("<Configure>", self._update_page_scrollregion)
+        self.page_host.bind("<Configure>", self._schedule_page_scroll_update)
         self.bind("<MouseWheel>", self._scroll_page)
         for builder in (self._welcome_page, self._network_page, self._account_page, self._repository_page):
             page = ttk.Frame(self.page_host, style="Panel.TFrame")
@@ -124,16 +132,39 @@ class OnboardingWizard(tk.Toplevel):
 
     def _resize_page_host(self, event: tk.Event[Any]) -> None:
         self.page_canvas.itemconfigure(self.page_window, width=max(int(event.width), 1))
+        self._schedule_page_scroll_update()
 
-    def _update_page_scrollregion(self, _event: tk.Event[Any] | None = None) -> None:
-        self.page_canvas.configure(scrollregion=self.page_canvas.bbox("all"))
+    def _schedule_page_scroll_update(self, _event: tk.Event[Any] | None = None) -> None:
+        if self._page_scroll_update_pending:
+            return
+        self._page_scroll_update_pending = True
+        self.after_idle(self._update_page_scrollregion)
+
+    def _update_page_scrollregion(self) -> None:
+        self._page_scroll_update_pending = False
+        bounds = self.page_canvas.bbox("all")
+        if bounds is None:
+            bounds = (0, 0, 0, 0)
+        self.page_canvas.configure(scrollregion=bounds)
+        content_height = max(int(bounds[3] - bounds[1]), 0)
+        viewport_height = max(int(self.page_canvas.winfo_height()), 0)
+        required = vertical_scrollbar_required(content_height, viewport_height)
+        if required == self._page_scrollbar_visible:
+            return
+        self._page_scrollbar_visible = required
+        if required:
+            self.page_scrollbar.grid(row=0, column=1, sticky="ns")
+        else:
+            self.page_scrollbar.grid_remove()
+            self.page_canvas.yview_moveto(0.0)
+        self.after_idle(self._schedule_page_scroll_update)
 
     def _reset_page_scroll(self) -> None:
-        self._update_page_scrollregion()
         self.page_canvas.yview_moveto(0.0)
+        self._schedule_page_scroll_update()
 
     def _scroll_page(self, event: tk.Event[Any]) -> None:
-        if isinstance(event.widget, ttk.Treeview):
+        if not self._page_scrollbar_visible or isinstance(event.widget, ttk.Treeview):
             return
         delta = int(getattr(event, "delta", 0))
         if delta:
@@ -283,7 +314,7 @@ class OnboardingWizard(tk.Toplevel):
                 else "仓库不存在时才会创建；同名私有仓库已存在时会安全复用。"
             )
             self.repository_status.configure(text=text)
-        self.after_idle(self._update_page_scrollregion)
+        self._schedule_page_scroll_update()
         if existing and self.step == 3 and hasattr(self, "next_button") and not self.repositories_loaded:
             self._refresh_repositories()
 

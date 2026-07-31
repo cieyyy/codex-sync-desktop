@@ -150,6 +150,24 @@ class CodexSyncApp(tk.Tk):
         style.configure("Treeview.Heading", font=section_font, background=COLORS["surface_alt"], foreground=COLORS["cyan"], bordercolor=COLORS["border"], padding=(8, 7))
         style.map("Treeview.Heading", background=[("active", COLORS["secondary_pressed"])])
         style.configure("Vertical.TScrollbar", background=COLORS["surface_alt"], troughcolor=COLORS["background"], arrowcolor=COLORS["text_muted"], bordercolor=COLORS["border"])
+        style.configure(
+            "Wizard.Vertical.TScrollbar",
+            background=COLORS["secondary"],
+            troughcolor=COLORS["surface_alt"],
+            arrowcolor=COLORS["cyan"],
+            bordercolor=COLORS["border"],
+            lightcolor=COLORS["secondary_hover"],
+            darkcolor=COLORS["secondary_pressed"],
+            relief="flat",
+            borderwidth=0,
+            arrowsize=14,
+            width=15,
+        )
+        style.map(
+            "Wizard.Vertical.TScrollbar",
+            background=[("active", COLORS["primary"]), ("pressed", COLORS["primary_pressed"])],
+            arrowcolor=[("active", COLORS["text"]), ("pressed", COLORS["text"])],
+        )
         style.configure("Tech.Horizontal.TProgressbar", troughcolor=COLORS["surface_alt"], background=COLORS["primary"], lightcolor=COLORS["primary"], darkcolor=COLORS["primary"], bordercolor=COLORS["border"], thickness=8)
 
     def _build_ui(self) -> None:

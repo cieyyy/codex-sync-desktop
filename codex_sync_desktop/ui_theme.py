@@ -27,6 +27,13 @@ COLORS = {
 }
 
 
+def vertical_scrollbar_required(content_height: int, viewport_height: int, tolerance: int = 0) -> bool:
+    """Return whether vertically scrolling is needed for the current viewport."""
+    if viewport_height <= 1:
+        return False
+    return content_height > viewport_height + max(tolerance, 0)
+
+
 def centered_geometry(
     width: int,
     height: int,

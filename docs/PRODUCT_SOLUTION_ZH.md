@@ -1,7 +1,7 @@
 # Codex Sync Desktop 总体方案
 
 > 文档日期：2026-07-31  
-> 当前源码版本：`0.7.2b4`，发布目标为 `manual-v0.7.2-beta.4`
+> 当前源码版本：`0.7.2b5`，发布目标为 `manual-v0.7.2-beta.5`
 > 适用目标：Windows 10/11、Intel macOS、Apple Silicon macOS  
 > 状态说明：本文描述目标方案与当前实现；未完成部分会明确标注。
 

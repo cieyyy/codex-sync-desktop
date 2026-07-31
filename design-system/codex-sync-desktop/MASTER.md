@@ -288,3 +288,10 @@ Before delivering any UI code, verify:
 - Credentials and two-factor verification are entered only on GitHub's official page; the desktop app must state that it never reads or stores them.
 - Keep an indeterminate progress indicator visible while authorization is pending and provide a persistent “重新打开授权页” recovery action.
 - Copy the one-time device code automatically, recheck authentication after browser completion, and configure Git credentials before advancing.
+
+## Adaptive Wizard Scrolling
+
+- The first-run wizard shows its vertical scrollbar only when the active page is taller than the available viewport.
+- Recalculate overflow after page changes, expandable-form changes, and window resizing; remove the scrollbar immediately when content fits.
+- Use the dedicated high-contrast navy/blue scrollbar style instead of the operating-system default light track.
+- Ignore wheel input when no overflow exists, and keep the fixed progress/footer controls outside the scrolling region.

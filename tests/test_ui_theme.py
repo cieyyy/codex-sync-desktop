@@ -7,7 +7,8 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from codex_sync_desktop.app import CodexSyncApp, dependency_setup_incomplete
-from codex_sync_desktop.ui_theme import centered_geometry
+from codex_sync_desktop.ui_theme import centered_geometry, vertical_scrollbar_required
+from codex_sync_desktop.wizard import OnboardingWizard
 from codex_sync_desktop.window_chrome import (
     APP_USER_MODEL_ID,
     GWL_EXSTYLE,
@@ -32,6 +33,54 @@ class WindowPlacementTests(TestCase):
         geometry = centered_geometry(860, 640, 1700, 900, 1120, 760, 1920, 1080)
 
         self.assertEqual(geometry, "860x640+1044+424")
+
+
+class ScrollbarVisibilityTests(TestCase):
+    def test_hides_scrollbar_when_content_fits(self):
+        self.assertFalse(vertical_scrollbar_required(480, 480))
+        self.assertFalse(vertical_scrollbar_required(479, 480))
+
+    def test_shows_scrollbar_when_content_overflows(self):
+        self.assertTrue(vertical_scrollbar_required(481, 480))
+
+    def test_defers_visibility_until_viewport_is_measured(self):
+        self.assertFalse(vertical_scrollbar_required(800, 1))
+
+    def test_wizard_mounts_scrollbar_only_after_overflow(self):
+        fake_wizard = SimpleNamespace(
+            _page_scroll_update_pending=True,
+            _page_scrollbar_visible=False,
+            page_canvas=Mock(),
+            page_scrollbar=Mock(),
+            after_idle=Mock(),
+            _schedule_page_scroll_update=Mock(),
+        )
+        fake_wizard.page_canvas.bbox.return_value = (0, 0, 800, 601)
+        fake_wizard.page_canvas.winfo_height.return_value = 600
+
+        OnboardingWizard._update_page_scrollregion(fake_wizard)
+
+        self.assertTrue(fake_wizard._page_scrollbar_visible)
+        fake_wizard.page_scrollbar.grid.assert_called_once_with(row=0, column=1, sticky="ns")
+        fake_wizard.page_scrollbar.grid_remove.assert_not_called()
+
+    def test_wizard_removes_scrollbar_when_content_fits(self):
+        fake_wizard = SimpleNamespace(
+            _page_scroll_update_pending=True,
+            _page_scrollbar_visible=True,
+            page_canvas=Mock(),
+            page_scrollbar=Mock(),
+            after_idle=Mock(),
+            _schedule_page_scroll_update=Mock(),
+        )
+        fake_wizard.page_canvas.bbox.return_value = (0, 0, 800, 600)
+        fake_wizard.page_canvas.winfo_height.return_value = 600
+
+        OnboardingWizard._update_page_scrollregion(fake_wizard)
+
+        self.assertFalse(fake_wizard._page_scrollbar_visible)
+        fake_wizard.page_scrollbar.grid_remove.assert_called_once_with()
+        fake_wizard.page_canvas.yview_moveto.assert_called_once_with(0.0)
 
 
 class TaskFeedbackTests(TestCase):
