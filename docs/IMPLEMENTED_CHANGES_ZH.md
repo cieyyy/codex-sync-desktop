@@ -9,10 +9,10 @@
 | 层级 | 版本或提交 | 状态 |
 |---|---|---|
 | 远程稳定版 | `v0.7.1` / `4bd4d7b` | 已发布 |
-| 手工测试版 | `manual-v0.7.2-beta.2` / `342a88c` | 已发布，未使用 Actions |
-| 当前发布候选 | `manual-v0.7.2-beta.3` | 包含完整预览、拉取认证自愈和全新设备浏览器登录 |
-| Python 包版本 | `0.7.2b3` | Beta 3 候选 |
-| 当前自动测试 | 115 项 | 全部通过 |
+| 手工测试版 | `manual-v0.7.2-beta.3` / `3ad5dff` | 已发布，未使用 Actions |
+| 当前发布候选 | `manual-v0.7.2-beta.4` | 增加已有私有仓库选择、安全连接和向导滚动布局 |
+| Python 包版本 | `0.7.2b4` | Beta 4 候选 |
+| 当前自动测试 | 119 项 | 全部通过 |
 
 Beta 3 相对远程稳定版包含的主要提交：
 
@@ -23,6 +23,7 @@ ae40ea8  首次配置和拉取恢复增强
 18d8c12  拉取前自动修复 GitHub 访问
 821f33b  全新设备默认浏览器 GitHub 登录
 e6076fa  软件总体方案与已实施修改文档
+3ad5dff  Beta 3 版本整理
 ```
 
 ## 2. 初始同步能力
@@ -187,6 +188,12 @@ ae40ea8  harden first-run setup and pull recovery
 - 安装完成后必须通过真实 `--version` 检测才显示成功。
 - 工具下载只接受 GitHub 官方资源并校验 SHA-256。
 - 检测到零会话且没有侧栏索引时视为正常空设备。
+- 第 4 步明确区分“创建新的私有仓库”和“连接已有私有仓库”。
+- 可列出当前账号有权限的私有仓库，也可手动输入 `owner/repository` 或 GitHub HTTPS 地址。
+- 连接已有仓库时验证访问权限、私有性和本地 `origin` 是否匹配。
+- 仅对无文件、无提交且缺少 `origin` 的空 Git 仓库自动补齐远程地址。
+- 已有本地内容、提交或不同远程仓库时停止，避免错误改绑。
+- 向导中间步骤区域支持纵向滚动，底部导航和进度区保持可见。
 
 主要提交：
 
@@ -200,6 +207,10 @@ c17e3fc  make Windows path detection cross-platform
 af2c8ae  detect custom Windows tool installations
 b2e5e6c  install GitHub CLI without MSI
 ```
+
+### 当前本地源码待发布
+
+已有仓库选择、安全连接及高 DPI/低高度窗口滚动已完成代码和专项测试，尚未进入已发布安装包。
 
 ## 10. 默认浏览器 GitHub 登录
 
@@ -226,7 +237,7 @@ b2e5e6c  install GitHub CLI without MSI
 
 ### 发布状态
 
-该功能已通过自动测试并进入 Beta 3 发布候选。安装了 v0.7.1 或 v0.7.2 Beta 2 的设备仍然使用旧登录行为。
+该功能已通过自动测试并随 Beta 3 发布。安装了 v0.7.1 或 v0.7.2 Beta 2 的设备仍然使用旧登录行为。
 
 ## 11. 代理和证书
 
@@ -327,7 +338,7 @@ design-system/codex-sync-desktop/MASTER.md
 
 ```text
 首次配置专项测试：31 项通过
-全量自动测试：115 项通过
+全量自动测试：119 项通过
 Python compileall：通过
 ```
 

@@ -45,6 +45,7 @@ class RepositorySetupResult:
     name: str
     url: str
     local_path: Path
+    created: bool = False
 
 
 @dataclass
@@ -582,6 +583,67 @@ def clear_tool_installer_cache(app_home: Path) -> int:
     return removed
 
 
+def list_private_repositories(
+    proxy_url: str = "",
+) -> list[str]:
+    proxy = validate_proxy_url(proxy_url)
+    auth = github_auth_status(proxy)
+    if not auth.ok:
+        raise RuntimeError("GitHub 尚未登录，请先点击“打开 GitHub 登录”")
+    result = run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            "user/repos",
+            "-f",
+            "affiliation=owner,collaborator,organization_member",
+            "-f",
+            "visibility=private",
+            "-f",
+            "sort=full_name",
+            "-f",
+            "per_page=100",
+        ],
+        timeout=60,
+        proxy_url=proxy,
+    )
+    _require_ok(result, "读取 GitHub 私有仓库失败")
+    repositories = json.loads(result.output)
+    if not isinstance(repositories, list):
+        raise RuntimeError("GitHub 私有仓库列表格式无效")
+    names = {
+        str(item.get("full_name") or "").strip()
+        for item in repositories
+        if isinstance(item, dict) and item.get("private") is True
+    }
+    return sorted((name for name in names if name), key=str.casefold)
+
+
+def connect_private_repository(
+    local_path: Path,
+    repository_reference: str,
+    proxy_url: str = "",
+) -> RepositorySetupResult:
+    proxy = validate_proxy_url(proxy_url)
+    _require_repository_tools(proxy)
+    reference = _normalize_repository_reference(repository_reference)
+    account = _github_account(proxy)
+    verified = run(
+        ["gh", "repo", "view", reference, "--json", "isPrivate,url,nameWithOwner"],
+        timeout=30,
+        proxy_url=proxy,
+    )
+    _require_ok(verified, "读取已有 GitHub 仓库失败")
+    repository = json.loads(verified.output)
+    owner, name, url = _verified_private_repository(repository, reference)
+    target = local_path.expanduser().resolve()
+    _prepare_local_repository(target, f"{owner}/{name}", url.rstrip("/") + ".git", proxy)
+    _configure_git_identity(target, str(account["login"]), str(account["id"]), proxy)
+    return RepositorySetupResult(owner, name, url, target, created=False)
+
+
 def create_private_repository(
     local_path: Path,
     repository_name: str,
@@ -591,6 +653,37 @@ def create_private_repository(
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", name):
         raise ValueError("仓库名称只能包含字母、数字、点、横线和下划线，最长 100 个字符")
     proxy = validate_proxy_url(proxy_url)
+    _require_repository_tools(proxy)
+    target = local_path.expanduser().resolve()
+    if target.exists() and not target.is_dir():
+        raise FileExistsError(f"本地同步路径不是目录：{target}")
+
+    user = _github_account(proxy)
+    owner = str(user.get("login") or "").strip()
+    user_id = str(user.get("id") or "").strip()
+    full_name = f"{owner}/{name}"
+
+    view = run(["gh", "repo", "view", full_name, "--json", "isPrivate,url,nameWithOwner"], timeout=30, proxy_url=proxy)
+    was_created = not view.ok
+    if not view.ok:
+        create_result = run(
+            ["gh", "repo", "create", full_name, "--private", "--description", "Private Codex conversation sync vault"],
+            timeout=60,
+            proxy_url=proxy,
+        )
+        _require_ok(create_result, "创建 GitHub 私有仓库失败")
+
+    verified = run(["gh", "repo", "view", full_name, "--json", "isPrivate,url,nameWithOwner"], timeout=30, proxy_url=proxy)
+    _require_ok(verified, "验证 GitHub 仓库失败")
+    repository = json.loads(verified.output)
+    verified_owner, verified_name, url = _verified_private_repository(repository, full_name)
+    full_name = f"{verified_owner}/{verified_name}"
+    _prepare_local_repository(target, full_name, url.rstrip("/") + ".git", proxy)
+    _configure_git_identity(target, owner, user_id, proxy)
+    return RepositorySetupResult(verified_owner, verified_name, url, target, created=was_created)
+
+
+def _require_repository_tools(proxy: str) -> None:
     git_probe = run(["git", "--version"], timeout=10, proxy_url=proxy)
     gh_probe = run(["gh", "--version"], timeout=10, proxy_url=proxy)
     if not git_probe.ok or not gh_probe.ok:
@@ -603,54 +696,128 @@ def create_private_repository(
     auth = github_auth_status(proxy)
     if not auth.ok:
         raise RuntimeError("GitHub 尚未登录，请先点击“打开 GitHub 登录”")
-    target = local_path.expanduser().resolve()
-    if target.exists() and not target.is_dir():
-        raise FileExistsError(f"本地同步路径不是目录：{target}")
 
+
+def _github_account(proxy: str) -> dict[str, object]:
     user_result = run(["gh", "api", "user"], timeout=30, proxy_url=proxy)
     _require_ok(user_result, "读取 GitHub 账号失败")
     user = json.loads(user_result.output)
+    if not isinstance(user, dict):
+        raise RuntimeError("GitHub 账号信息格式无效")
     owner = str(user.get("login") or "").strip()
     user_id = str(user.get("id") or "").strip()
     if not owner or not user_id:
         raise RuntimeError("GitHub 账号信息不完整")
-    full_name = f"{owner}/{name}"
+    return user
 
-    view = run(["gh", "repo", "view", full_name, "--json", "isPrivate,url,nameWithOwner"], timeout=30, proxy_url=proxy)
-    if not view.ok:
-        created = run(
-            ["gh", "repo", "create", full_name, "--private", "--description", "Private Codex conversation sync vault"],
-            timeout=60,
-            proxy_url=proxy,
-        )
-        _require_ok(created, "创建 GitHub 私有仓库失败")
 
-    verified = run(["gh", "repo", "view", full_name, "--json", "isPrivate,url,nameWithOwner"], timeout=30, proxy_url=proxy)
-    _require_ok(verified, "验证 GitHub 仓库失败")
-    repository = json.loads(verified.output)
+def _normalize_repository_reference(value: str) -> str:
+    reference = value.strip().removesuffix("/")
+    if reference.endswith(".git"):
+        reference = reference[:-4]
+    parsed = urllib.parse.urlparse(reference)
+    if parsed.scheme:
+        if parsed.scheme != "https" or parsed.hostname not in {"github.com", "www.github.com"}:
+            raise ValueError("已有仓库只支持 GitHub HTTPS 地址或 owner/repository")
+        reference = parsed.path.strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}", reference):
+        raise ValueError("已有仓库格式应为 owner/repository 或 https://github.com/owner/repository")
+    return reference
+
+
+def _verified_private_repository(
+    repository: object,
+    fallback_reference: str,
+) -> tuple[str, str, str]:
+    if not isinstance(repository, dict):
+        raise RuntimeError("GitHub 仓库信息格式无效")
     if repository.get("isPrivate") is not True:
         raise RuntimeError("安全检查失败：目标仓库不是私有仓库")
-    url = str(repository.get("url") or f"https://github.com/{full_name}")
-    remote = url.rstrip("/") + ".git"
+    full_name = str(repository.get("nameWithOwner") or fallback_reference).strip()
+    normalized = _normalize_repository_reference(full_name)
+    owner, name = normalized.split("/", 1)
+    url = str(repository.get("url") or f"https://github.com/{normalized}").rstrip("/")
+    parsed_url = urllib.parse.urlparse(url)
+    if parsed_url.scheme != "https" or parsed_url.hostname not in {"github.com", "www.github.com"}:
+        raise RuntimeError("安全检查失败：仓库地址不是 GitHub 官方 HTTPS 地址")
+    return owner, name, url
 
+
+def _prepare_local_repository(target: Path, full_name: str, remote: str, proxy: str) -> None:
+    if target.exists() and not target.is_dir():
+        raise FileExistsError(f"本地同步路径不是目录：{target}")
     setup_git = run(["gh", "auth", "setup-git"], timeout=30, proxy_url=proxy)
     _require_ok(setup_git, "配置 GitHub 凭据失败")
     if (target / ".git").is_dir():
         current_remote = run(["git", "remote", "get-url", "origin"], target, timeout=20, proxy_url=proxy)
-        _require_ok(current_remote, "读取本地仓库地址失败")
-        expected_key = f"github.com/{full_name}".lower()
-        actual_key = current_remote.output.strip().removesuffix(".git").replace(":", "/").lower()
-        if expected_key not in actual_key:
-            raise RuntimeError("本地目录已经连接到另一个 GitHub 仓库，请选择新的空目录")
+        if current_remote.ok:
+            actual_key = _github_repository_key(current_remote.output)
+            if actual_key != full_name.lower():
+                raise RuntimeError("本地目录已经连接到另一个 GitHub 仓库，请选择新的空目录")
+            return
+        remotes = run(["git", "remote"], target, timeout=20, proxy_url=proxy)
+        _require_ok(remotes, "读取本地仓库远程配置失败")
+        if "origin" in {line.strip() for line in remotes.output.splitlines()}:
+            raise RuntimeError("本地仓库的 origin 配置损坏，请选择新的空目录")
+        status = run(["git", "status", "--porcelain"], target, timeout=20, proxy_url=proxy)
+        _require_ok(status, "检查本地仓库状态失败")
+        head = run(["git", "rev-parse", "--verify", "HEAD"], target, timeout=20, proxy_url=proxy)
+        contains_files = any(item.name != ".git" for item in target.iterdir())
+        if contains_files or status.output.strip() or head.ok:
+            raise RuntimeError("本地仓库缺少 origin，但已经包含文件或提交；为避免连接错误仓库，请选择新的空目录")
+        added = run(["git", "remote", "add", "origin", remote], target, timeout=20, proxy_url=proxy)
+        _require_ok(added, "修复本地仓库 origin 失败")
+        remote_head = run(["git", "ls-remote", "--symref", "origin", "HEAD"], target, timeout=60, proxy_url=proxy)
+        if not remote_head.ok:
+            run(["git", "remote", "remove", "origin"], target, timeout=20, proxy_url=proxy)
+            _require_ok(remote_head, "验证已有仓库默认分支失败")
+        branch_match = re.search(r"^ref:\s+refs/heads/([^\s]+)\s+HEAD$", remote_head.output, re.MULTILINE)
+        if branch_match:
+            branch = branch_match.group(1)
+            fetched = run(["git", "fetch", "origin", branch], target, timeout=300, proxy_url=proxy)
+            if not fetched.ok:
+                run(["git", "remote", "remove", "origin"], target, timeout=20, proxy_url=proxy)
+                _require_ok(fetched, "拉取已有仓库默认分支失败")
+            checked_out = run(
+                ["git", "checkout", "-B", branch, "--track", f"origin/{branch}"],
+                target,
+                timeout=60,
+                proxy_url=proxy,
+            )
+            if not checked_out.ok:
+                run(["git", "remote", "remove", "origin"], target, timeout=20, proxy_url=proxy)
+                _require_ok(checked_out, "连接已有仓库默认分支失败")
+        else:
+            branch = run(["git", "branch", "--show-current"], target, timeout=20, proxy_url=proxy)
+            _require_ok(branch, "读取本地仓库分支失败")
+            if not branch.output.strip():
+                _require_ok(
+                    run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], target, timeout=20, proxy_url=proxy),
+                    "初始化本地主分支失败",
+                )
     else:
         if target.exists() and any(target.iterdir()):
             raise FileExistsError(f"本地目录不是空目录：{target}")
         target.parent.mkdir(parents=True, exist_ok=True)
         clone = run(["git", "clone", remote, str(target)], timeout=300, proxy_url=proxy)
         _require_ok(clone, "克隆私有仓库失败")
+
+
+def _configure_git_identity(target: Path, owner: str, user_id: str, proxy: str) -> None:
     _require_ok(run(["git", "config", "user.name", owner], target, proxy_url=proxy), "配置 Git 用户名失败")
     _require_ok(run(["git", "config", "user.email", f"{user_id}+{owner}@users.noreply.github.com"], target, proxy_url=proxy), "配置 Git 邮箱失败")
-    return RepositorySetupResult(owner, name, url, target)
+
+
+def _github_repository_key(remote: str) -> str:
+    value = remote.strip().removesuffix("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    if value.startswith("git@github.com:"):
+        return value[len("git@github.com:") :].strip("/").lower()
+    parsed = urllib.parse.urlparse(value)
+    if parsed.hostname not in {"github.com", "www.github.com"}:
+        return ""
+    return parsed.path.strip("/").lower()
 
 
 def _require_ok(result: CommandResult, label: str) -> None:

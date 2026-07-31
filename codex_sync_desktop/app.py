@@ -967,8 +967,19 @@ def main() -> None:
     if args.smoke_onboarding:
         app.withdraw()
         wizard = OnboardingWizard(app)
+        wizard.repository_mode.set("create")
+        wizard.repositories_loaded = True
+        wizard.step = 3
+        wizard._show_step()
         wizard.update_idletasks()
-        wizard.destroy()
+        if not wizard.next_button.winfo_ismapped() or wizard.page_canvas.winfo_height() <= 1:
+            wizard.destroy()
+            app.destroy()
+            raise RuntimeError("Onboarding layout did not expose its fixed action bar and scrollable content")
+        app.after(120, app.quit)
+        app.mainloop()
+        if wizard.winfo_exists():
+            wizard.destroy()
         app.destroy()
         return
     if args.smoke_import_preview:

@@ -10,12 +10,14 @@ from unittest.mock import patch
 from codex_sync_desktop.core.git_client import CommandResult
 from codex_sync_desktop.core.onboarding import (
     clear_tool_installer_cache,
+    connect_private_repository,
     create_private_repository,
     detect_system_proxy,
     github_setup_status,
     install_windows_portable_gh,
     launch_dependency_install,
     launch_github_login,
+    list_private_repositories,
     open_default_browser,
     select_macos_gh_installer_asset,
     select_windows_gh_portable_asset,
@@ -197,6 +199,142 @@ class ProxyValidationTests(TestCase):
 
 
 class PrivateRepositorySetupTests(TestCase):
+    @patch("codex_sync_desktop.core.onboarding.github_auth_status", return_value=CommandResult(True, "", 0))
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_lists_only_private_repositories_available_to_account(self, mocked_run, _auth):
+        mocked_run.return_value = CommandResult(
+            True,
+            json.dumps(
+                [
+                    {"full_name": "buyer/zeta", "private": True},
+                    {"full_name": "team/alpha", "private": True},
+                    {"full_name": "buyer/public", "private": False},
+                ]
+            ),
+            0,
+        )
+
+        repositories = list_private_repositories()
+
+        self.assertEqual(repositories, ["buyer/zeta", "team/alpha"])
+        command = mocked_run.call_args.args[0]
+        self.assertEqual(command[:5], ["gh", "api", "--method", "GET", "user/repos"])
+
+    @patch("codex_sync_desktop.core.onboarding.github_auth_status", return_value=CommandResult(True, "", 0))
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_connects_existing_private_repository_without_creating_it(self, mocked_run, _auth):
+        mocked_run.side_effect = [
+            CommandResult(True, "git version 2.50", 0),
+            CommandResult(True, "gh version 2.75", 0),
+            CommandResult(True, json.dumps({"login": "buyer", "id": 123}), 0),
+            CommandResult(
+                True,
+                json.dumps(
+                    {
+                        "isPrivate": True,
+                        "url": "https://github.com/team/existing-vault",
+                        "nameWithOwner": "team/existing-vault",
+                    }
+                ),
+                0,
+            ),
+            CommandResult(True, "credentials ready", 0),
+            CommandResult(True, "cloned", 0),
+            CommandResult(True, "", 0),
+            CommandResult(True, "", 0),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "existing-vault"
+            result = connect_private_repository(target, "team/existing-vault")
+
+        self.assertFalse(result.created)
+        self.assertEqual((result.owner, result.name), ("team", "existing-vault"))
+        commands = [call.args[0] for call in mocked_run.call_args_list]
+        self.assertNotIn(["gh", "repo", "create"], [command[:3] for command in commands])
+        self.assertIn(
+            ["git", "clone", "https://github.com/team/existing-vault.git", str(target.resolve())],
+            commands,
+        )
+
+    @patch("codex_sync_desktop.core.onboarding.github_auth_status", return_value=CommandResult(True, "", 0))
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_repairs_missing_origin_only_for_empty_unborn_repository(self, mocked_run, _auth):
+        mocked_run.side_effect = [
+            CommandResult(True, "git version 2.50", 0),
+            CommandResult(True, "gh version 2.75", 0),
+            CommandResult(True, json.dumps({"login": "buyer", "id": 123}), 0),
+            CommandResult(
+                True,
+                json.dumps(
+                    {
+                        "isPrivate": True,
+                        "url": "https://github.com/buyer/existing-vault",
+                        "nameWithOwner": "buyer/existing-vault",
+                    }
+                ),
+                0,
+            ),
+            CommandResult(True, "credentials ready", 0),
+            CommandResult(False, "error: No such remote 'origin'", 2),
+            CommandResult(True, "", 0),
+            CommandResult(True, "", 0),
+            CommandResult(False, "fatal: Needed a single revision", 128),
+            CommandResult(True, "", 0),
+            CommandResult(True, "ref: refs/heads/main\tHEAD\n", 0),
+            CommandResult(True, "", 0),
+            CommandResult(True, "", 0),
+            CommandResult(True, "", 0),
+            CommandResult(True, "", 0),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "existing-vault"
+            (target / ".git").mkdir(parents=True)
+            result = connect_private_repository(target, "buyer/existing-vault")
+
+        self.assertEqual(result.local_path, target.resolve())
+        commands = [call.args[0] for call in mocked_run.call_args_list]
+        self.assertIn(
+            ["git", "remote", "add", "origin", "https://github.com/buyer/existing-vault.git"],
+            commands,
+        )
+        self.assertIn(["git", "checkout", "-B", "main", "--track", "origin/main"], commands)
+
+    @patch("codex_sync_desktop.core.onboarding.github_auth_status", return_value=CommandResult(True, "", 0))
+    @patch("codex_sync_desktop.core.onboarding.run")
+    def test_refuses_to_add_origin_when_local_repository_has_history(self, mocked_run, _auth):
+        mocked_run.side_effect = [
+            CommandResult(True, "git version 2.50", 0),
+            CommandResult(True, "gh version 2.75", 0),
+            CommandResult(True, json.dumps({"login": "buyer", "id": 123}), 0),
+            CommandResult(
+                True,
+                json.dumps(
+                    {
+                        "isPrivate": True,
+                        "url": "https://github.com/buyer/existing-vault",
+                        "nameWithOwner": "buyer/existing-vault",
+                    }
+                ),
+                0,
+            ),
+            CommandResult(True, "credentials ready", 0),
+            CommandResult(False, "error: No such remote 'origin'", 2),
+            CommandResult(True, "", 0),
+            CommandResult(True, "", 0),
+            CommandResult(True, "abc123", 0),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "existing-vault"
+            (target / ".git").mkdir(parents=True)
+            with self.assertRaisesRegex(RuntimeError, "已经包含文件或提交"):
+                connect_private_repository(target, "buyer/existing-vault")
+
+        commands = [call.args[0] for call in mocked_run.call_args_list]
+        self.assertNotIn(
+            ["git", "remote", "add", "origin", "https://github.com/buyer/existing-vault.git"],
+            commands,
+        )
+
     @patch("codex_sync_desktop.core.onboarding.github_auth_status")
     @patch("codex_sync_desktop.core.onboarding.run")
     def test_resumes_existing_local_clone_of_same_private_repository(self, mocked_run, mocked_auth):

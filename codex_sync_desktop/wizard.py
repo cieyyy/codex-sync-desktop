@@ -16,14 +16,17 @@ from .core.onboarding import (
     RepositorySetupResult,
     check_github_connectivity,
     clear_tool_installer_cache,
+    connect_private_repository,
     create_private_repository,
     detect_system_proxy,
     github_setup_status,
     launch_dependency_install,
     launch_github_login,
+    list_private_repositories,
     open_default_browser,
     validate_proxy_url,
 )
+from .core.git_client import VaultGit
 from .core.git_client import CommandResult
 from .ui_theme import COLORS, center_window
 
@@ -34,7 +37,7 @@ class OnboardingWizard(tk.Toplevel):
         self.withdraw()
         self.app = app
         self.title("首次配置向导")
-        self.minsize(760, 580)
+        self.minsize(700, 500)
         self.configure(background=COLORS["background"])
         self.transient(app)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
@@ -47,13 +50,18 @@ class OnboardingWizard(tk.Toplevel):
         self.china_mode = tk.BooleanVar(value=app.settings.china_network_mode)
         self.proxy_url = tk.StringVar(value=app.settings.proxy_url)
         self.repository_name = tk.StringVar(value="codex-sync-vault")
+        existing_remote = str(getattr(app.settings, "vault_remote", "") or "").strip()
+        self.repository_mode = tk.StringVar(value="existing" if existing_remote else "create")
+        self.repository_reference = tk.StringVar(value=existing_remote)
+        self.repositories_loaded = False
+        self.repositories_loading = False
         default_vault = app.settings.vault_path or str(Path.home() / "Documents" / "CodexSync" / "codex-sync-vault")
         self.local_path = tk.StringVar(value=default_vault)
         self.codex_home = tk.StringVar(value=app.settings.codex_home)
         self.device_name = tk.StringVar(value=app.settings.device_name)
         self.proxy_url.trace_add("write", lambda *_args: self._invalidate_network())
         self._build()
-        center_window(self, app, 860, 640)
+        center_window(self, app, 900, 700)
         self.deiconify()
         self.lift(app)
         self.focus_force()
@@ -67,8 +75,23 @@ class OnboardingWizard(tk.Toplevel):
         ttk.Label(top, text="首次配置", style="Title.TLabel").pack(side="left")
         self.progress = ttk.Label(top, text="步骤 1 / 4", style="Status.TLabel")
         self.progress.pack(side="right")
-        self.page_host = ttk.Frame(shell, style="Panel.TFrame", padding=22)
-        self.page_host.pack(fill="both", expand=True)
+        page_area = ttk.Frame(shell, style="Panel.TFrame")
+        page_area.pack(fill="both", expand=True)
+        self.page_canvas = tk.Canvas(
+            page_area,
+            background=COLORS["surface"],
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        page_scrollbar = ttk.Scrollbar(page_area, orient="vertical", command=self.page_canvas.yview)
+        self.page_canvas.configure(yscrollcommand=page_scrollbar.set)
+        page_scrollbar.pack(side="right", fill="y")
+        self.page_canvas.pack(side="left", fill="both", expand=True)
+        self.page_host = ttk.Frame(self.page_canvas, style="Panel.TFrame", padding=22)
+        self.page_window = self.page_canvas.create_window((0, 0), window=self.page_host, anchor="nw")
+        self.page_canvas.bind("<Configure>", self._resize_page_host)
+        self.page_host.bind("<Configure>", self._update_page_scrollregion)
+        self.bind("<MouseWheel>", self._scroll_page)
         for builder in (self._welcome_page, self._network_page, self._account_page, self._repository_page):
             page = ttk.Frame(self.page_host, style="Panel.TFrame")
             builder(page)
@@ -98,6 +121,23 @@ class OnboardingWizard(tk.Toplevel):
             self.activity_progress.stop()
             self.activity_progress.configure(value=0)
             self.activity_label.configure(text=text, style="ActivityError.TLabel" if failed else "Muted.TLabel")
+
+    def _resize_page_host(self, event: tk.Event[Any]) -> None:
+        self.page_canvas.itemconfigure(self.page_window, width=max(int(event.width), 1))
+
+    def _update_page_scrollregion(self, _event: tk.Event[Any] | None = None) -> None:
+        self.page_canvas.configure(scrollregion=self.page_canvas.bbox("all"))
+
+    def _reset_page_scroll(self) -> None:
+        self._update_page_scrollregion()
+        self.page_canvas.yview_moveto(0.0)
+
+    def _scroll_page(self, event: tk.Event[Any]) -> None:
+        if isinstance(event.widget, ttk.Treeview):
+            return
+        delta = int(getattr(event, "delta", 0))
+        if delta:
+            self.page_canvas.yview_scroll(-1 if delta > 0 else 1, "units")
 
     @staticmethod
     def _heading(parent: ttk.Frame, title: str, subtitle: str) -> None:
@@ -158,11 +198,47 @@ class OnboardingWizard(tk.Toplevel):
         self.dependency_status.pack(anchor="w", pady=(10, 0))
 
     def _repository_page(self, page: ttk.Frame) -> None:
-        self._heading(page, "创建私有仓库并首次同步", "点击完成后，软件会创建私有仓库、克隆到本机、配置 Git 身份，并立即上传本机活动文字会话。")
+        self._heading(page, "配置私有同步仓库", "可以创建新的私有仓库，也可以连接当前账号已有权限的私有仓库；已有仓库不会被重复创建。")
+        mode = ttk.Frame(page, style="Panel.TFrame")
+        mode.pack(fill="x", pady=(0, 12))
+        ttk.Radiobutton(
+            mode,
+            text="创建新的私有仓库",
+            value="create",
+            variable=self.repository_mode,
+            command=self._toggle_repository_mode,
+        ).pack(side="left")
+        ttk.Radiobutton(
+            mode,
+            text="连接已有私有仓库",
+            value="existing",
+            variable=self.repository_mode,
+            command=self._toggle_repository_mode,
+        ).pack(side="left", padx=(18, 0))
+        self.repository_choice_host = ttk.Frame(page, style="Panel.TFrame")
+        self.repository_choice_host.pack(fill="x", pady=(0, 10))
+        self.create_repository_frame = ttk.Frame(self.repository_choice_host, style="Panel.TFrame")
+        ttk.Label(self.create_repository_frame, text="新仓库名称", style="Panel.TLabel", width=17).grid(row=0, column=0, sticky="w")
+        ttk.Entry(self.create_repository_frame, textvariable=self.repository_name).grid(row=0, column=1, sticky="ew")
+        self.create_repository_frame.columnconfigure(1, weight=1)
+        self.existing_repository_frame = ttk.Frame(self.repository_choice_host, style="Panel.TFrame")
+        ttk.Label(self.existing_repository_frame, text="已有私有仓库", style="Panel.TLabel", width=17).grid(row=0, column=0, sticky="w")
+        self.repository_selector = ttk.Combobox(
+            self.existing_repository_frame,
+            textvariable=self.repository_reference,
+            state="normal",
+        )
+        self.repository_selector.grid(row=0, column=1, sticky="ew")
+        ttk.Button(self.existing_repository_frame, text="刷新仓库", command=self._refresh_repositories).grid(row=0, column=2, padx=(8, 0))
+        self.existing_repository_frame.columnconfigure(1, weight=1)
+        ttk.Label(
+            self.existing_repository_frame,
+            text="可从列表选择，也可输入 owner/repository 或 GitHub HTTPS 地址。",
+            style="PanelMuted.TLabel",
+        ).grid(row=1, column=1, sticky="w", pady=(6, 0))
         form = ttk.Frame(page, style="Panel.TFrame")
         form.pack(fill="x")
         fields = (
-            ("GitHub 仓库名称", self.repository_name, False),
             ("本地同步目录", self.local_path, True),
             ("Codex 数据目录", self.codex_home, True),
             ("设备名称", self.device_name, False),
@@ -173,8 +249,9 @@ class OnboardingWizard(tk.Toplevel):
             if browse:
                 ttk.Button(form, text="选择", command=lambda value=variable: self._choose_directory(value)).grid(row=row, column=2, padx=(8, 0))
         form.columnconfigure(1, weight=1)
-        self.repository_status = ttk.Label(page, text="只有仓库通过私有性验证且首次推送成功，向导才会显示全部完成。", style="PanelMuted.TLabel", wraplength=700, justify="left")
+        self.repository_status = ttk.Label(page, text="只有仓库通过私有性和访问权限验证且首次同步成功，向导才会显示全部完成。", style="PanelMuted.TLabel", wraplength=700, justify="left")
         self.repository_status.pack(anchor="w", pady=(18, 0))
+        self._toggle_repository_mode()
 
     def _show_step(self) -> None:
         for page in self.pages:
@@ -185,6 +262,64 @@ class OnboardingWizard(tk.Toplevel):
         self.next_button.configure(text="创建仓库并首次同步" if self.step == len(self.pages) - 1 else "下一步")
         if self.step == 2:
             self._refresh_account()
+        if self.step == 3:
+            self._toggle_repository_mode()
+        self.after_idle(self._reset_page_scroll)
+
+    def _toggle_repository_mode(self) -> None:
+        if not hasattr(self, "repository_choice_host"):
+            return
+        self.create_repository_frame.pack_forget()
+        self.existing_repository_frame.pack_forget()
+        existing = self.repository_mode.get() == "existing"
+        selected = self.existing_repository_frame if existing else self.create_repository_frame
+        selected.pack(fill="x")
+        if hasattr(self, "next_button") and self.step == len(self.pages) - 1:
+            self.next_button.configure(text="连接并首次同步" if existing else "创建仓库并首次同步")
+        if hasattr(self, "repository_status"):
+            text = (
+                "将验证已有仓库为私有仓库，再安全克隆或连接本地目录。不会重新创建仓库。"
+                if existing
+                else "仓库不存在时才会创建；同名私有仓库已存在时会安全复用。"
+            )
+            self.repository_status.configure(text=text)
+        self.after_idle(self._update_page_scrollregion)
+        if existing and self.step == 3 and hasattr(self, "next_button") and not self.repositories_loaded:
+            self._refresh_repositories()
+
+    def _refresh_repositories(self) -> None:
+        if self.repositories_loading:
+            return
+        try:
+            proxy = validate_proxy_url(self.proxy_url.get())
+        except ValueError as exc:
+            messagebox.showerror("代理地址错误", str(exc), parent=self)
+            return
+        self.repositories_loading = True
+        self.repository_status.configure(text="正在读取当前 GitHub 账号可访问的私有仓库...")
+        self.app._run_task(
+            "读取私有仓库",
+            lambda: list_private_repositories(proxy),
+            self._show_repositories,
+            callback_with_result=True,
+            error_callback=self._repository_list_failed,
+        )
+
+    def _show_repositories(self, repositories: list[str]) -> None:
+        self.repositories_loading = False
+        self.repositories_loaded = True
+        self.repository_selector.configure(values=repositories)
+        current = self.repository_reference.get().strip()
+        if not current and repositories:
+            self.repository_reference.set(repositories[0])
+        if repositories:
+            self.repository_status.configure(text=f"已读取 {len(repositories)} 个私有仓库。请选择一个，或手动输入 owner/repository。")
+        else:
+            self.repository_status.configure(text="当前账号没有返回可访问的私有仓库；可切换为创建新仓库。")
+
+    def _repository_list_failed(self, exc: Exception) -> None:
+        self.repositories_loading = False
+        self.repository_status.configure(text=f"读取私有仓库失败：{exc}\n仍可手动输入 owner/repository 后继续验证。")
 
     def _back(self) -> None:
         if self.step:
@@ -389,15 +524,29 @@ class OnboardingWizard(tk.Toplevel):
             if not device_name:
                 raise ValueError("设备名称不能为空")
             local_path = Path(self.local_path.get()).expanduser()
+            mode = self.repository_mode.get()
+            if mode == "existing":
+                repository_value = self.repository_reference.get().strip()
+                if not repository_value:
+                    raise ValueError("请选择或输入已有 GitHub 私有仓库")
+            else:
+                repository_value = self.repository_name.get().strip()
+                if not repository_value:
+                    raise ValueError("新仓库名称不能为空")
         except (OSError, ValueError) as exc:
             messagebox.showerror("配置不完整", str(exc), parent=self)
             return
-        self.repository_status.configure(text="正在创建并验证私有仓库...")
+        existing = mode == "existing"
+        self.repository_status.configure(text="正在验证并连接已有私有仓库..." if existing else "正在创建并验证私有仓库...")
         self.back_button.configure(state="disabled")
-        self.next_button.configure(state="disabled", text="正在创建私有仓库...")
+        self.next_button.configure(state="disabled", text="正在连接已有仓库..." if existing else "正在创建私有仓库...")
+        if existing:
+            setup = lambda: connect_private_repository(local_path, repository_value, proxy)
+        else:
+            setup = lambda: create_private_repository(local_path, repository_value, proxy)
         self.app._run_task(
             "首次自动配置",
-            lambda: create_private_repository(local_path, self.repository_name.get(), proxy),
+            setup,
             lambda result: self._complete(result, proxy, codex_home, device_name),
             callback_with_result=True,
             error_callback=self._setup_failed,
@@ -416,15 +565,22 @@ class OnboardingWizard(tk.Toplevel):
         for key, variable in self.app.setting_vars.items():
             if hasattr(settings, key):
                 variable.set(str(getattr(settings, key)))
-        self.repository_status.configure(text=f"私有仓库已创建：{result.owner}/{result.name}。正在首次导出并推送...")
+        action = "已创建" if result.created else "已连接"
+        self.repository_status.configure(text=f"私有仓库{action}：{result.owner}/{result.name}。正在拉取并完成首次同步...")
         self.next_button.configure(text="正在首次同步...")
         self.app._run_task(
             "首次同步",
-            lambda: {"summary": self.app._export_and_push_work(result.local_path, force_push=True)},
+            lambda: {"summary": self._initial_sync_work(result, proxy)},
             lambda payload: self._initial_sync_complete(result, str(payload["summary"])),
             callback_with_result=True,
             error_callback=self._initial_sync_failed,
         )
+
+    def _initial_sync_work(self, result: RepositorySetupResult, proxy: str) -> str:
+        self.app._report_progress("正在拉取私有仓库最新内容")
+        pulled = VaultGit(result.local_path, proxy_url=proxy).pull()
+        self.app._checked_git(pulled)
+        return self.app._export_and_push_work(result.local_path, force_push=True)
 
     def _initial_sync_complete(self, result: RepositorySetupResult, summary: str) -> None:
         self.app.settings.onboarding_complete = True
@@ -439,12 +595,13 @@ class OnboardingWizard(tk.Toplevel):
         )
 
     def _setup_failed(self, exc: Exception) -> None:
-        self.repository_status.configure(text=f"创建失败：{exc}\n请检查上方配置后点击重试。")
+        action = "连接" if self.repository_mode.get() == "existing" else "创建"
+        self.repository_status.configure(text=f"{action}失败：{exc}\n请检查上方配置后点击重试。")
         self.back_button.configure(state="normal")
-        self.next_button.configure(state="normal", text="重试创建并首次同步")
+        self.next_button.configure(state="normal", text=f"重试{action}并首次同步")
 
     def _initial_sync_failed(self, exc: Exception) -> None:
-        self.repository_status.configure(text=f"仓库已安全创建，但首次推送失败：{exc}\n配置已保留，检查网络后点击重试。")
+        self.repository_status.configure(text=f"仓库已安全连接，但首次同步失败：{exc}\n配置已保留，检查网络后点击重试。")
         self.back_button.configure(state="normal")
         self.next_button.configure(state="normal", text="重试首次同步")
 
