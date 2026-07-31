@@ -989,7 +989,7 @@ def main() -> None:
         wizard.repositories_loaded = True
         wizard.step = 3
         wizard._show_step()
-        wizard.update_idletasks()
+        wizard.update()
         if not wizard.next_button.winfo_ismapped() or wizard.page_canvas.winfo_height() <= 1:
             wizard.destroy()
             app.destroy()
