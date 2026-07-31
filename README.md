@@ -4,6 +4,11 @@
 
 面向购买用户的一页式准备材料见 [购买用户首次使用准备清单](docs/CUSTOMER_PREPARATION.md)。
 
+项目的完整设计与实施记录见：
+
+- [Codex Sync Desktop 总体方案](docs/PRODUCT_SOLUTION_ZH.md)
+- [Codex Sync Desktop 已实施修改记录](docs/IMPLEMENTED_CHANGES_ZH.md)
+
 首次启动会打开四步配置向导，帮助普通用户完成网络检查、GitHub 注册/登录、私有仓库创建、本机配置和首次上传。中国大陆用户可以在向导中填写本机 HTTP 代理并先测试 GitHub 连接；测试成功后会保存设置，重新打开软件可以继续。
 
 ## 能做什么
@@ -80,14 +85,14 @@ Windows 会同时检查当前 `PATH`、常用安装目录和注册表，因此 G
 
 ## 构建产物
 
-GitHub Actions 会构建：
+仓库保留自动构建工作流，但也支持完全不使用 GitHub Actions 的本地构建和手工 Release 上传。当前 Beta 发布采用手工方式。发布产物包括：
 
 - Windows x64 ZIP
 - Windows x64 Setup.exe 安装器
 - macOS Intel ZIP/DMG
 - macOS Apple Silicon ZIP/DMG
 
-源码运行没有第三方依赖。PyInstaller 仅在 GitHub Actions 构建机安装，不占用使用者本机开发磁盘。
+源码运行没有重量级第三方框架依赖。PyInstaller 只用于构建环境，不需要安装到普通使用者电脑。
 
 当前发布包使用临时签名，没有 Apple Developer/Windows 商业代码签名。macOS
 首次打开时可在 Finder 中右键应用并选择“打开”；Windows 可能显示 SmartScreen
