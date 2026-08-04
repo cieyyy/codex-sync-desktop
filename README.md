@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/icon.png" width="112" alt="Codex Sync Desktop icon">
+  <img src="./assets/icon.svg" width="112" alt="Codex Sync Desktop icon">
 </p>
 
 <h1 align="center">Codex Sync Desktop</h1>
