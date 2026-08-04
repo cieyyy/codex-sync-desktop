@@ -32,7 +32,7 @@ from .core.import_preview import apply_title_overrides, items_for_category
 from .core.index_repair import repair_indexes
 from .core.onboarding import validate_proxy_url
 from .core.processes import running_codex_processes
-from .core.sessions import apply_import, export_sanitized_sessions, list_source_devices, plan_import
+from .core.sessions import apply_import, export_sanitized_sessions, list_source_device_options, plan_import
 from .import_preview_dialog import ImportPreviewDialog
 from .ui_theme import COLORS, center_window
 from .window_chrome import WindowChrome, configure_windows_app_identity
@@ -60,6 +60,7 @@ class CodexSyncApp(tk.Tk):
         self.messages: queue.Queue = queue.Queue()
         self.active_plan = None
         self.title_overrides: dict[str, dict[str, str]] = {}
+        self.source_device_keys: dict[str, str] = {}
         self.last_diagnostics: dict[str, Any] | None = None
         self.task_buttons: list[ttk.Button] = []
         self.pages: dict[str, ttk.Frame] = {}
@@ -261,7 +262,6 @@ class CodexSyncApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 10))
         self._task_button(toolbar, "刷新检查", self.refresh_all, "Accent.TButton").pack(side="left")
         ttk.Button(toolbar, text="打开 Codex 目录", command=lambda: self._open_path(self.settings.codex_path)).pack(side="left", padx=6)
-        ttk.Button(toolbar, text="查看解决办法", command=self.show_remediation).pack(side="left")
         ttk.Button(toolbar, text="首次配置向导", command=self.open_onboarding).pack(side="left", padx=6)
         self.overview_tree = self._tree(self.overview_tab, ("item", "status", "detail"), (180, 120, 590))
 
@@ -288,7 +288,7 @@ class CodexSyncApp(tk.Tk):
         self._task_button(actions, "导入并修复", self.import_and_repair).pack(side="left")
         ttk.Label(
             self.sync_tab,
-            text="预览完成后，点击下方动作可查看对应会话并修改最终导入标题。",
+            text="拉取、导出和预览无需退出 ChatGPT/Codex；导入修复、包含导入的一键同步和撤销前需要退出。",
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(0, 8))
         self.import_tree = self._tree(self.sync_tab, ("action", "count", "meaning"), (180, 100, 610))
@@ -330,7 +330,6 @@ class CodexSyncApp(tk.Tk):
         buttons = ttk.Frame(panel, style="Panel.TFrame")
         buttons.grid(row=len(labels) + 1, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self._task_button(buttons, "保存设置", self.save_settings, "Accent.TButton").pack(side="left")
-        self._task_button(buttons, "初始化/克隆仓库", self.prepare_vault).pack(side="left", padx=6)
         logs_header = ttk.Frame(self.maintenance_tab)
         logs_header.pack(fill="x", pady=(0, 8))
         ttk.Label(logs_header, text="运行日志", style="Section.TLabel").pack(side="left")
@@ -369,15 +368,15 @@ class CodexSyncApp(tk.Tk):
         lfs_required = diagnostics.get("git_lfs_required", False)
         lfs_status = "正常" if diagnostics["git_lfs"] else ("缺失（必需）" if lfs_required else "未安装（可选）")
         lfs_detail = "Git LFS 可用" if diagnostics["git_lfs"] else (
-            "打开“查看解决办法”安装 Git LFS" if lfs_required else "当前仓库未检测到 LFS，可以不处理"
+            "请在首次配置向导中安装 Git LFS" if lfs_required else "当前仓库未检测到 LFS，可以不处理"
         )
         if diagnostics.get("gh_authenticated"):
             gh_status, gh_detail = "已登录", "认证可用"
         elif diagnostics.get("gh"):
             gh_status, gh_detail = "未登录（可选）", "执行 gh auth login；Git 能同步时可不处理"
         else:
-            gh_status, gh_detail = "未安装（可选）", "Git 能同步时可不安装；命令见“查看解决办法”"
-        git_detail = "Git 可用" if diagnostics["git"] else "同步必需；安装命令见“查看解决办法”"
+            gh_status, gh_detail = "未安装（可选）", "Git 能同步时可不安装；也可通过首次配置向导安装"
+        git_detail = "Git 可用" if diagnostics["git"] else "同步必需；请打开首次配置向导自动安装"
         codex_detail = diagnostics["codex_home"] if diagnostics["codex_home_exists"] else "在“日志与设置”中选择当前用户的 .codex 目录"
         database_detail = ", ".join(Path(item).name for item in diagnostics["databases"]) or "先启动一次 Codex，再刷新检查"
         index_status, index_detail = session_index_summary(diagnostics)
@@ -452,18 +451,27 @@ class CodexSyncApp(tk.Tk):
 
     def refresh_sources(self) -> None:
         vault = self.settings.vault
-        devices = list_source_devices(vault) if vault else []
-        self.device_combo["values"] = devices
-        if devices and self.source_device.get() not in devices:
-            others = [item for item in devices if item != device_slug(self.settings.device_name)]
-            self.source_device.set((others or devices)[0])
-        if not devices:
+        options = list_source_device_options(vault) if vault else []
+        previous_key = CodexSyncApp._selected_source_device(self)
+        self.source_device_keys = dict(options)
+        labels = [label for label, _key in options]
+        self.device_combo["values"] = labels
+        selected = next((label for label, key in options if key == previous_key), "")
+        if not selected and options:
+            local_device = device_slug(self.settings.device_name)
+            selected = next((label for label, key in options if key != local_device), options[0][0])
+        self.source_device.set(selected)
+        if not options:
             self.source_device.set("")
         self._update_source_summary()
 
+    def _selected_source_device(self) -> str:
+        selected = self.source_device.get().strip()
+        return getattr(self, "source_device_keys", {}).get(selected, selected)
+
     def _update_source_summary(self) -> None:
         vault = self.settings.vault
-        source = self.source_device.get()
+        source = CodexSyncApp._selected_source_device(self)
         if not vault or not source:
             self.source_count_label.configure(text="会话数量：—")
             self.source_time_label.configure(text="最后上传：—")
@@ -568,7 +576,8 @@ class CodexSyncApp(tk.Tk):
         vault = self._require_vault()
         if not vault:
             return
-        source = self.source_device.get().strip()
+        source = CodexSyncApp._selected_source_device(self)
+        source_label = self.source_device.get().strip() or source
         local_device = device_slug(self.settings.device_name)
         should_import = bool(source and source != local_device)
         if should_import:
@@ -579,7 +588,7 @@ class CodexSyncApp(tk.Tk):
                 return
         description = "拉取仓库并上传本机活动会话"
         if should_import:
-            description = f"拉取仓库、导入来源设备 {source}、修复侧栏，再上传本机活动会话"
+            description = f"拉取仓库、导入来源设备 {source_label}、修复侧栏，再上传本机活动会话"
         if not messagebox.askyesno("确认一键同步", description + "。是否继续？"):
             return
 
@@ -589,7 +598,7 @@ class CodexSyncApp(tk.Tk):
             self._checked_git(git.pull())
             copied = merged = titles = 0
             if should_import:
-                self._report_progress(f"正在分析来源设备 {source} 的会话")
+                self._report_progress(f"正在分析来源设备 {source_label} 的会话")
                 plan = plan_import(self.settings.codex_path, vault, source)
                 CodexSyncApp._apply_preview_title_overrides(self, plan)
                 has_changes = any(item.action in ("copy", "conflict") for item in plan.items) or bool(plan.title_updates)
@@ -636,7 +645,8 @@ class CodexSyncApp(tk.Tk):
 
     def preview_import(self) -> None:
         vault = self._require_vault()
-        source = self.source_device.get()
+        source = CodexSyncApp._selected_source_device(self)
+        source_label = self.source_device.get().strip() or source
         if not vault or not source:
             messagebox.showwarning("缺少来源", "请选择来源设备。")
             return
@@ -644,7 +654,7 @@ class CodexSyncApp(tk.Tk):
             if self.settings.auto_pull_before_import:
                 self._report_progress("正在拉取仓库最新内容")
                 self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
-            self._report_progress(f"正在分析来源设备 {source} 的会话")
+            self._report_progress(f"正在分析来源设备 {source_label} 的会话")
             plan = plan_import(self.settings.codex_path, vault, source)
             CodexSyncApp._apply_preview_title_overrides(self, plan)
             return plan
@@ -652,7 +662,8 @@ class CodexSyncApp(tk.Tk):
 
     def import_and_repair(self) -> None:
         vault = self._require_vault()
-        source = self.source_device.get()
+        source = CodexSyncApp._selected_source_device(self)
+        source_label = self.source_device.get().strip() or source
         if not vault or not source:
             messagebox.showwarning("缺少来源", "请选择来源设备。")
             return
@@ -667,7 +678,7 @@ class CodexSyncApp(tk.Tk):
             if self.settings.auto_pull_before_import:
                 self._report_progress("正在拉取仓库最新内容")
                 self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
-            self._report_progress(f"正在分析来源设备 {source} 的会话")
+            self._report_progress(f"正在分析来源设备 {source_label} 的会话")
             plan = plan_import(self.settings.codex_path, vault, source)
             CodexSyncApp._apply_preview_title_overrides(self, plan)
             transaction = create_import_transaction(self.settings.codex_path, plan)
@@ -792,7 +803,7 @@ class CodexSyncApp(tk.Tk):
             self.show_page("maintenance")
             return None
         if not (vault / ".git").exists():
-            messagebox.showwarning("仓库未初始化", "请先在设置中初始化或克隆仓库。")
+            messagebox.showwarning("仓库尚未连接", "请运行首次配置向导，连接或创建私有同步仓库。")
             return None
         return vault
 

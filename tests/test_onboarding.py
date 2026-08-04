@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from codex_sync_desktop.core.git_client import CommandResult
 from codex_sync_desktop.core.onboarding import (
+    _redirect_downloaded_snapshot,
     clear_tool_installer_cache,
     connect_private_repository,
     create_private_repository,
@@ -32,6 +33,18 @@ from codex_sync_desktop.core.onboarding import (
 class ProxyValidationTests(TestCase):
     def test_accepts_local_http_proxy(self):
         self.assertEqual(validate_proxy_url(" http://127.0.0.1:7890 "), "http://127.0.0.1:7890")
+
+    def test_downloaded_zip_snapshot_is_redirected_to_clean_git_clone(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "codex-sync-vault-main"
+            nested = selected / "codex-sync-vault-main" / "sessions-text" / "devices"
+            nested.mkdir(parents=True)
+
+            target = _redirect_downloaded_snapshot(selected, "codex-sync-vault")
+
+            self.assertEqual(target, root / "codex-sync-vault-sync")
+            self.assertTrue(nested.exists())
 
     def test_rejects_proxy_credentials_and_invalid_scheme(self):
         with self.assertRaises(ValueError):

@@ -67,7 +67,7 @@ class ImportPreviewDialog(tk.Toplevel):
         ttk.Label(header, text=title, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text=f"来源设备：{self.plan.source_device} · 共 {len(self.items)} 个会话",
+            text=f"来源设备：{self.plan.source_label or self.plan.source_device} · 共 {len(self.items)} 个会话",
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(3, 0))
 

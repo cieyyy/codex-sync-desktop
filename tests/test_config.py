@@ -5,10 +5,14 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase
 
-from codex_sync_desktop.core.config import SettingsStore
+from codex_sync_desktop.core.config import SettingsStore, device_slug
 
 
 class SettingsMigrationTests(TestCase):
+    def test_device_slug_preserves_unicode_device_names(self):
+        self.assertEqual(device_slug("天文"), "天文")
+        self.assertEqual(device_slug("  办公室 Mac  "), "办公室-mac")
+
     def test_existing_vault_from_pre_onboarding_version_is_migrated(self):
         with tempfile.TemporaryDirectory() as directory:
             app_home = Path(directory)

@@ -55,6 +55,7 @@ class ImportPlan:
     source_device: str
     items: List[ImportItem] = field(default_factory=list)
     title_updates: Dict[str, str] = field(default_factory=dict)
+    source_label: str = ""
 
     @property
     def counts(self) -> Dict[str, int]:

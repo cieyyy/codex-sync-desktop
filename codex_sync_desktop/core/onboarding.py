@@ -631,7 +631,7 @@ def connect_private_repository(
     repository = json.loads(verified.output)
     owner, name, url = _verified_private_repository(repository, reference)
     target = local_path.expanduser().resolve()
-    _prepare_local_repository(target, f"{owner}/{name}", url.rstrip("/") + ".git", proxy)
+    target = _prepare_local_repository(target, f"{owner}/{name}", url.rstrip("/") + ".git", proxy)
     _configure_git_identity(target, str(account["login"]), str(account["id"]), proxy)
     return RepositorySetupResult(owner, name, url, target, created=False)
 
@@ -670,7 +670,7 @@ def create_private_repository(
     repository = json.loads(verified.output)
     verified_owner, verified_name, url = _verified_private_repository(repository, full_name)
     full_name = f"{verified_owner}/{verified_name}"
-    _prepare_local_repository(target, full_name, url.rstrip("/") + ".git", proxy)
+    target = _prepare_local_repository(target, full_name, url.rstrip("/") + ".git", proxy)
     _configure_git_identity(target, owner, user_id, proxy)
     return RepositorySetupResult(verified_owner, verified_name, url, target, created=was_created)
 
@@ -735,9 +735,10 @@ def _verified_private_repository(
     return owner, name, url
 
 
-def _prepare_local_repository(target: Path, full_name: str, remote: str, proxy: str) -> None:
+def _prepare_local_repository(target: Path, full_name: str, remote: str, proxy: str) -> Path:
     if target.exists() and not target.is_dir():
         raise FileExistsError(f"本地同步路径不是目录：{target}")
+    target = _redirect_downloaded_snapshot(target, full_name.rsplit("/", 1)[-1])
     setup_git = run(["gh", "auth", "setup-git"], timeout=30, proxy_url=proxy)
     _require_ok(setup_git, "配置 GitHub 凭据失败")
     if (target / ".git").is_dir():
@@ -746,7 +747,7 @@ def _prepare_local_repository(target: Path, full_name: str, remote: str, proxy: 
             actual_key = _github_repository_key(current_remote.output)
             if actual_key != full_name.lower():
                 raise RuntimeError("本地目录已经连接到另一个 GitHub 仓库，请选择新的空目录")
-            return
+            return target
         remotes = run(["git", "remote"], target, timeout=20, proxy_url=proxy)
         _require_ok(remotes, "读取本地仓库远程配置失败")
         if "origin" in {line.strip() for line in remotes.output.splitlines()}:
@@ -793,6 +794,27 @@ def _prepare_local_repository(target: Path, full_name: str, remote: str, proxy: 
         target.parent.mkdir(parents=True, exist_ok=True)
         clone = run(["git", "clone", remote, str(target)], timeout=300, proxy_url=proxy)
         _require_ok(clone, "克隆私有仓库失败")
+    return target
+
+
+def _redirect_downloaded_snapshot(target: Path, repository_name: str) -> Path:
+    if not target.is_dir() or (target / ".git").is_dir() or not any(target.iterdir()):
+        return target
+    direct_snapshot = (target / "sessions-text" / "devices").is_dir()
+    nested_snapshots = [
+        child
+        for child in target.iterdir()
+        if child.is_dir() and (child / "sessions-text" / "devices").is_dir()
+    ]
+    if not direct_snapshot and len(nested_snapshots) != 1:
+        return target
+    base = target.parent / f"{repository_name}-sync"
+    candidate = base
+    suffix = 2
+    while candidate.exists():
+        candidate = target.parent / f"{repository_name}-sync-{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _configure_git_identity(target: Path, owner: str, user_id: str, proxy: str) -> None:

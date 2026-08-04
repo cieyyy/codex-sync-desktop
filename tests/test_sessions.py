@@ -20,7 +20,13 @@ from codex_sync_desktop.core.import_preview import (
     render_session_bytes,
 )
 from codex_sync_desktop.core.models import ImportItem, ImportPlan
-from codex_sync_desktop.core.sessions import apply_import, export_sanitized_sessions, plan_import
+from codex_sync_desktop.core.sessions import (
+    NoActiveSessionsError,
+    apply_import,
+    export_sanitized_sessions,
+    list_source_device_options,
+    plan_import,
+)
 from tests.helpers import create_state_database, write_session
 
 
@@ -34,7 +40,7 @@ class SessionSyncTests(unittest.TestCase):
             exported.parent.mkdir(parents=True)
             exported.write_text("preserve", encoding="utf-8")
 
-            with self.assertRaises(FileNotFoundError):
+            with self.assertRaises(NoActiveSessionsError):
                 export_sanitized_sessions(source_home, vault, "Office Mac")
 
             self.assertEqual(exported.read_text(encoding="utf-8"), "preserve")
@@ -83,10 +89,44 @@ class SessionSyncTests(unittest.TestCase):
             self.assertEqual(manifest["format"], 4)
             self.assertEqual(manifest["sessions"][0]["title"], "Renamed on Mac")
             plan = plan_import(target_home, vault, "office-mac")
+            self.assertEqual(plan.source_label, "Office Mac")
             self.assertEqual(plan.title_updates, {session_id: "Renamed on Mac"})
             self.assertEqual(plan.items[0].task_id, session_id)
             self.assertEqual(plan.items[0].source_title, "Renamed on Mac")
             self.assertEqual(plan.items[0].local_title, "Old Windows name")
+
+    def test_export_migrates_legacy_generic_slug_for_same_named_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            vault = root / "vault"
+            write_session(source_home, "019f9999-1111-7222-8333-444455556666")
+            legacy_root = vault / "sessions-text" / "devices" / "device"
+            legacy_root.mkdir(parents=True)
+            (legacy_root / "manifest.json").write_text(
+                json.dumps({"format": 4, "device": "天文", "device_slug": "device", "sessions": []}),
+                encoding="utf-8",
+            )
+
+            export_sanitized_sessions(source_home, vault, "天文")
+
+            self.assertFalse(legacy_root.exists())
+            manifest = json.loads(
+                (vault / "sessions-text" / "devices" / "天文" / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["device_slug"], "天文")
+
+    def test_source_device_options_use_manifest_display_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            device_root = vault / "sessions-text" / "devices" / "device"
+            device_root.mkdir(parents=True)
+            (device_root / "manifest.json").write_text(
+                json.dumps({"format": 4, "device": "天文", "device_slug": "device", "sessions": []}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(list_source_device_options(vault), [("天文", "device")])
 
     def test_preview_title_override_survives_a_replanned_import(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -382,6 +422,18 @@ class SessionSyncTests(unittest.TestCase):
             self.assertEqual(plan.counts, {"invalid-source-hash": 1})
             with self.assertRaises(ValueError):
                 apply_import(plan)
+
+    def test_manifest_hash_accepts_git_crlf_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_session(root / "source", "019f9999-1111-7222-8333-444455556666")
+            export_sanitized_sessions(root / "source", root / "vault", "Mac")
+            exported = next((root / "vault" / "sessions-text" / "devices" / "mac" / "sessions").rglob("*.jsonl"))
+            exported.write_bytes(exported.read_bytes().replace(b"\n", b"\r\n"))
+
+            plan = plan_import(root / "target", root / "vault", "mac")
+
+            self.assertNotIn("invalid-source-hash", plan.counts)
 
 
 if __name__ == "__main__":

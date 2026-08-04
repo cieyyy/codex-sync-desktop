@@ -28,6 +28,7 @@ from .core.onboarding import (
 )
 from .core.git_client import VaultGit
 from .core.git_client import CommandResult
+from .core.sessions import NoActiveSessionsError, list_source_device_options
 from .ui_theme import COLORS, center_window, vertical_scrollbar_required
 
 
@@ -359,8 +360,12 @@ class OnboardingWizard(tk.Toplevel):
 
     def _next(self) -> None:
         if self.step == 0 and not self.confirm_private.get():
-            messagebox.showwarning("需要确认", "请确认私有仓库和敏感信息提示后继续。", parent=self)
-            return
+            messagebox.showinfo(
+                "安全确认",
+                "已为你勾选安全确认。同步仓库必须保持私有，会话文字可能包含敏感信息。",
+                parent=self,
+            )
+            self.confirm_private.set(True)
         if self.step == 1 and not self.network_ok:
             messagebox.showwarning("网络尚未通过", "请先测试 GitHub 连接；需要代理时先启动代理并填写地址。", parent=self)
             return
@@ -597,7 +602,9 @@ class OnboardingWizard(tk.Toplevel):
             if hasattr(settings, key):
                 variable.set(str(getattr(settings, key)))
         action = "已创建" if result.created else "已连接"
-        self.repository_status.configure(text=f"私有仓库{action}：{result.owner}/{result.name}。正在拉取并完成首次同步...")
+        self.repository_status.configure(
+            text=f"私有仓库{action}：{result.owner}/{result.name}。本地同步目录：{result.local_path}。正在拉取并完成首次同步..."
+        )
         self.next_button.configure(text="正在首次同步...")
         self.app._run_task(
             "首次同步",
@@ -611,6 +618,15 @@ class OnboardingWizard(tk.Toplevel):
         self.app._report_progress("正在拉取私有仓库最新内容")
         pulled = VaultGit(result.local_path, proxy_url=proxy).pull()
         self.app._checked_git(pulled)
+        if not (self.app.settings.codex_path / "sessions").is_dir():
+            sources = list_source_device_options(result.local_path)
+            if sources:
+                names = "、".join(label for label, _key in sources[:5])
+                suffix = "等" if len(sources) > 5 else ""
+                return (
+                    f"已拉取仓库，发现 {len(sources)} 个来源设备：{names}{suffix}。\n"
+                    "请退出 ChatGPT/Codex/Codex++，在“同步与导入”中选择来源设备后点击“一键同步”。"
+                )
         return self.app._export_and_push_work(result.local_path, force_push=True)
 
     def _initial_sync_complete(self, result: RepositorySetupResult, summary: str) -> None:
@@ -621,7 +637,9 @@ class OnboardingWizard(tk.Toplevel):
         self.app.show_page("sync")
         messagebox.showinfo(
             "首次配置全部完成",
-            f"私有仓库：{result.owner}/{result.name}\n\n{summary}\n\n以后换设备时，只需安装软件并运行首次配置向导。",
+            f"私有仓库：{result.owner}/{result.name}\n"
+            f"本地同步目录：{result.local_path}\n\n{summary}\n\n"
+            "以后换设备时，只需安装软件、登录 GitHub，并在首次配置向导中选择这个已有私有仓库。",
             parent=self.app,
         )
 
@@ -632,6 +650,20 @@ class OnboardingWizard(tk.Toplevel):
         self.next_button.configure(state="normal", text=f"重试{action}并首次同步")
 
     def _initial_sync_failed(self, exc: Exception) -> None:
+        if isinstance(exc, NoActiveSessionsError):
+            self.app.settings.onboarding_complete = True
+            self.app.store.save(self.app.settings)
+            self.destroy()
+            self.app.refresh_all()
+            self.app.show_page("sync")
+            messagebox.showinfo(
+                "仓库连接完成，暂无会话",
+                "私有同步仓库已经连接成功。\n\n"
+                "当前电脑尚未生成 Codex 会话文件。请先打开 ChatGPT/Codex，使用 Codex 完成至少一次对话；"
+                f"系统创建 {exc.sessions_path} 后，再点击“一键同步”。",
+                parent=self.app,
+            )
+            return
         self.repository_status.configure(text=f"仓库已安全连接，但首次同步失败：{exc}\n配置已保留，检查网络后点击重试。")
         self.back_button.configure(state="normal")
         self.next_button.configure(state="normal", text="重试首次同步")

@@ -1,111 +1,159 @@
-# Codex Sync Desktop
+<p align="center">
+  <img src="./assets/icon.png" width="112" alt="Codex Sync Desktop icon">
+</p>
 
-一个轻量的 Windows/macOS 桌面工具，用 GitHub 私有仓库同步 Codex 对话文本，并修复目标设备的侧栏索引。
+<h1 align="center">Codex Sync Desktop</h1>
 
-面向新用户的一页式准备材料见 [新用户首次使用准备清单](docs/CUSTOMER_PREPARATION.md)。
+<p align="center">
+  使用用户自己的 GitHub 私有仓库，在 Windows 与 macOS 设备之间同步、合并并恢复 Codex 文字会话。
+</p>
 
-项目的完整设计与实施记录见：
+<p align="center">
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="Python" src="https://img.shields.io/badge/Python-%3E%3D3.9-3776AB.svg">
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-36BFFA.svg">
+  <img alt="Release" src="https://img.shields.io/badge/release-v0.7.2%20Beta%207-2457E6.svg">
+</p>
 
-- [Codex Sync Desktop 总体方案](docs/PRODUCT_SOLUTION_ZH.md)
-- [Codex Sync Desktop 已实施修改记录](docs/IMPLEMENTED_CHANGES_ZH.md)
+<p align="center">
+  简体中文 · <a href="./README_EN.md">English</a>
+</p>
 
-首次启动会打开四步配置向导，帮助普通用户完成网络检查、GitHub 注册/登录、私有仓库创建、本机配置和首次上传。中国大陆用户可以在向导中填写本机 HTTP 代理并先测试 GitHub 连接；测试成功后会保存设置，重新打开软件可以继续。
+Codex Sync Desktop 面向在多台电脑上使用 Codex 的个人用户。它把活动会话转换成去除图片和附件二进制的文字副本，保存到用户控制的 GitHub 私有仓库，并在目标设备上按内容与时间合并差异、修复 SQLite 和侧栏索引，使历史任务重新出现在 Codex 中。
 
-## 能做什么
+> [!IMPORTANT]
+> 本项目源码公开，但用于同步个人会话的 GitHub 仓库必须保持私有。会话文字中的 Token、密钥、密码、连接串、命令、工具输出和推理内容会被保留。请勿向本项目仓库、Issue、讨论区或公开同步仓库提交真实会话数据和凭据。
 
-- 只扫描活动的 `sessions`；归档和已删除会话不再上传
-- 导出完整文字会话，包括推理、命令、工具调用、工具输出和任务状态
-- 保留 Token、密钥、连接串和其他敏感字段，仅移除媒体及附件二进制
-- 使用 SHA-256 清单验证同步文件
-- 同步 SQLite／侧栏索引中的任务名称，导入时所选来源设备的非空标题优先
-- 每次导出只清理当前设备 Git 目录中已经归档或删除的旧副本，不删除其他设备现有任务
-- 只追加缺失会话；内容不同的同一会话在后台按语义内容和时间自动合并
-- 预览导入后可点击“新增、相同、自动合并、失败、标题更新”查看对应会话；自动合并支持切换来源、本机和合并后三个版本
-- 预览详情允许修改最终导入标题；标题按来源设备和 Task ID 暂存，并在正式导入重新分析后继续生效
-- 不再生成单独的冲突副本，也不在界面显示冲突列表
-- 重建 `state_*.sqlite` 的 `threads` 记录及 `session_index.jsonl`
-- 保留已有任务标题和会话中的原始项目路径，不需要路径映射
-- 每次导入前创建完整事务撤销点，包含被合并会话、状态数据库和侧栏索引
-- 默认只保留最近一次撤销点；可一键撤销最近导入或清理全部历史备份
-- 日志自动轮转并限制为约 2 MiB，可一键清理
-- 推送连接中断时自动切换 HTTP/1.1 重试，并继续推送上次遗留的本地提交
-- 调用系统 Git 和 GitHub CLI 拉取、提交及推送同步仓库
+> [!NOTE]
+> 本项目是社区开源工具，并非 OpenAI 官方产品，也不代表 OpenAI 提供的数据迁移或备份承诺。
 
-## 设计边界
+## 为什么需要它
 
-GitHub 同步内容是去除图片和附件二进制后的完整文字记录。工具调用、工具输出、内部推理和敏感字段都会上传；仓库必须保持私有，并按生产密钥仓库的标准控制访问权限。
+Codex 会话主要保存在本机。直接复制整个 `.codex` 目录会混入认证文件、缓存、数据库状态和附件，并容易覆盖目标设备已有任务；只保存 Markdown 摘要又无法恢复完整消息、工具记录和侧栏任务。
 
-本地撤销点只保存导入所需的会话原文件、索引数据库和索引文件，不复制附件和图片目录。独立的 `auth.json` 不会上传，但会话文字中出现的 API Key、Token 或密码会被保留。
+本项目提供一条可检查、可合并、可撤销的同步路径：
+
+- 每台设备使用独立目录，不互相覆盖；
+- 会话是否相同由实际内容判断，不只看名称或 Task ID；
+- 导入前校验路径和 SHA-256；
+- 内容分叉时按语义记录和时间后台合并；
+- 写入数据库前创建事务撤销点；
+- 导入后修复任务标题、SQLite 和 `session_index.jsonl`。
+
+## 核心特性
+
+- **多设备同步**：Windows、Intel macOS 和 Apple Silicon macOS 共用 GitHub 私有仓库；
+- **小白首次配置**：检测并准备 Git、GitHub CLI，调用默认浏览器完成 GitHub 授权；
+- **连接已有仓库**：列出账号可访问的私有仓库，不要求每台电脑重新创建；
+- **ZIP 快照自愈**：误选 GitHub ZIP 解压目录时保留原文件，并在旁边创建正式 Git 克隆；
+- **完整文字保留**：保留用户/助手消息、推理、命令、工具调用、工具输出和任务状态；
+- **媒体最小化**：不上传图片、附件二进制、Data URL 和独立认证文件；
+- **跨平台校验**：SHA-256 校验兼容 Git 在 Windows/macOS 间的换行转换；
+- **内容级合并**：同一任务在不同设备继续后，按记录内容和时间合并；
+- **标题同步**：读取有效人工标题，拒绝把系统指令或环境上下文当成标题；
+- **完整预览**：按动作查看全部会话内容、来源/本机/合并版本，并可修改最终标题；
+- **可撤销导入**：默认保留最近一次完整撤销点，并提供清理入口；
+- **资源受控**：日志约 2 MiB，预览按选择流式加载，不上传整个 `.codex`。
+
+## 快速开始
+
+普通用户从 [Releases](https://github.com/cieyyy/codex-sync-desktop/releases) 下载对应安装包。Windows 提供安装版和 Portable ZIP；macOS 构建会分别标明 Intel 与 Apple Silicon。
+
+第一次使用前可查看 [新用户首次使用准备清单](./docs/CUSTOMER_PREPARATION.md)。
+
+首次使用：
+
+1. 打开“首次配置向导”。
+2. 测试 GitHub 网络；需要代理时填写本机标准 HTTP 代理地址。
+3. 自动安装或修复 Git、GitHub CLI。
+4. 使用系统默认浏览器登录 GitHub；密码和二次验证只在 GitHub 官方页面输入。
+5. 选择“创建新的私有仓库”或“连接已有私有仓库”。
+6. 新设备拉取仓库后，在“同步与导入”选择来源设备。
+7. 退出 ChatGPT/Codex/Codex++，点击“一键同步”完成导入和索引修复。
+
+不需要下载 GitHub ZIP、U 盘、网盘或手工复制 `.codex`。
+
+## 什么时候需要退出 Codex
+
+以下操作会写入会话、SQLite 或侧栏索引，必须完全退出 ChatGPT/Codex/Codex++：
+
+- 导入并修复；
+- 包含其他设备导入的一键同步；
+- 撤销最近一次导入。
+
+拉取仓库、导出并推送、预览导入、登录 GitHub 和刷新检查不需要退出；导出前应等待当前回复结束，避免读取尚未写完的最后一条记录。
+
+## 同步数据流
+
+```text
+本机 ~/.codex/sessions
+  -> 选择活动会话
+  -> 移除媒体与附件二进制
+  -> 生成标题和 SHA-256 manifest
+  -> GitHub 私有仓库/sessions-text/devices/<设备>/
+  -> 目标设备拉取并校验
+  -> 复制缺失记录或按内容/时间合并
+  -> 修复 SQLite + session_index.jsonl
+  -> Codex 侧栏重新显示任务
+```
+
+详细设计见 [架构说明](./docs/ARCHITECTURE.md) 和 [总体方案](./docs/PRODUCT_SOLUTION_ZH.md)。
 
 ## 源码运行
 
-要求 Python 3.9+ 和 Tk 8.6+，推荐 Python 3.11。macOS 自带的旧 Tk 8.5
-可能无法在新系统上创建窗口；普通使用者应直接下载构建好的 `.app`/DMG，
-其中已包含兼容的 Python/Tk 运行库。
+要求 Python 3.9+、Tk 8.6+，推荐 Python 3.11。
 
-```bash
-python3 -m codex_sync_desktop
+```powershell
+python -m codex_sync_desktop
 ```
 
 只读诊断：
 
-```bash
-python3 -m codex_sync_desktop --diagnose
+```powershell
+python -m codex_sync_desktop --diagnose
 ```
 
 运行测试：
 
-```bash
-python3 -m unittest discover -v
+```powershell
+python -m unittest discover -s tests -v
 ```
 
-## 第一次使用
+源码运行依赖很少。普通使用者无需安装 Python，应直接使用 Release 安装包。
 
-1. 打开软件并进入“首次配置向导”。
-2. 阅读隐私提示，确认仓库必须保持私有。
-3. 测试 GitHub 网络；中国大陆用户按提示先启动合法合规的代理工具，再填写类似 `http://127.0.0.1:7890` 的本机地址。
-4. 没有 GitHub 账号时点击“打开注册”；完成后点击“打开 GitHub 登录”。
-5. 向导会实际启动检测 Git、GitHub CLI 和登录状态；工具缺失或损坏时点击“自动安装/修复必要工具”。
-6. 点击“创建仓库并首次同步”，等待私有仓库创建、首批活动文字会话上传完成。
-7. 在其他设备安装软件并使用同一 GitHub 账号连接该私有仓库。
+## 安全边界
 
-日常使用可以直接点击“一键同步”：未选择其他来源设备时只上传本机；选择来源设备后会依次拉取、导入合并、修复侧栏并上传本机。包含导入时必须先退出 Codex、ChatGPT 和 Codex++。
+- 自动配置的同步仓库必须通过 GitHub 私有性验证；
+- `auth.json`、原始状态数据库、图片和附件目录不会由导出器上传；
+- 会话正文中的敏感文字不会自动脱敏；
+- manifest 路径不能是绝对路径，也不能包含 `..`；
+- 文件校验失败时拒绝导入；
+- 数据库修改前创建撤销点；
+- 软件不会代替用户输入 GitHub 密码或二次验证码；
+- 安装包目前没有商业代码签名或 Apple 公证，下载后应核对 Release SHA-256。
 
-需要检查导入内容时，先点击“预览导入”，再点击下方任一动作行。详情窗口左侧选择会话，右侧查看文字内容；“自动合并”可以切换来源、本机和合并后版本。修改标题后点击“保存标题”，或切换会话让程序自动暂存；正式执行“导入并修复”或“一键同步”时才会写入 Codex 标题索引。关闭软件前未执行导入的标题草稿不会写入磁盘。
+安全问题请不要创建公开 Issue，按照 [SECURITY.md](./SECURITY.md) 私下报告。
 
-面向完全没有 Git/GitHub CLI 的用户，向导会自动安装；Windows 的 GitHub CLI 使用经过 SHA-256 校验的官方 ZIP 便携版，自动放入软件私有工具目录，不需要管理员权限、MSI、系统 PATH 或手动命令。Git 缺失时仍优先使用 winget，失败后打开经过校验的 Git 官方安装包。macOS 使用系统命令行工具安装器和经过校验的 GitHub CLI 官方安装包。详见 [小白首次配置手册](docs/FIRST_RUN_GUIDE.md)。
+## 项目状态与路线
 
-Windows 会同时检查当前 `PATH`、常用安装目录和注册表，因此 Git 安装在 `D:\Git` 等自定义目录时也可以被识别。自动修复只安装实际缺失的工具，不会重复安装已经可用的 Git 或 GitHub CLI。
+当前版本为 `v0.7.2 Beta 7`，重点是跨设备首次连接、旧清单兼容、设备名称和完整会话恢复。
 
-界面采用深色科技风操作台：主操作使用高对比电光青，次操作使用宝蓝色，危险操作使用红色，不使用系统灰或高饱和绿色作为正常按钮；同步、拉取、导入、修复和推送期间会显示持续进度和当前阶段。Windows 主窗口使用与界面融合的深色自绘标题栏和统一同步图标，普通 Git、GitHub CLI、PowerShell 检测及同步命令均在后台运行，不再闪出终端窗口；浏览器授权和系统管理员授权仍按系统安全规则显示。首次配置未完成时自动弹出向导；已配置设备若 Git 或 GitHub CLI 后续缺失，也会自动打开工具步骤。向导相对主窗口居中并保持在软件表面。
+- `v0.7.x`：首次配置、内容合并、标题/索引修复、事务撤销；
+- 后续：跨设备永久排除规则、仓库容量诊断、更多真实设备端到端验证；
+- 稳定版前：Windows 商业签名、Apple Developer 签名与公证。
 
-代理检测会读取 Windows WinINet 注册表和 macOS `scutil --proxy`；Clash TUN 未写入系统代理时，还会探测常见本机 HTTP 端口。发布包内置可信 CA 证书，HTTPS 检测不会通过关闭证书校验来绕过错误。
+## 非目标
 
-应用自身可以保持运行；它会阻止在其他相关程序仍占用数据库时执行修复或回滚。
+- 不是实时云盘，其他设备不会被远程同时触发；
+- 不同步 GitHub 账号密码、Codex 登录凭据或完整 `.codex`；
+- 不保证公开仓库中的会话安全；
+- 不替代 GitHub、Codex 或操作系统自身的数据安全机制；
+- 不自动重写 Git 历史或永久清除历史提交中的敏感内容。
 
-## 构建产物
+## 参与项目
 
-仓库保留自动构建工作流，但也支持完全不使用 GitHub Actions 的本地构建和手工 Release 上传。当前 Beta 发布采用手工方式。发布产物包括：
+提交代码前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md) 和 [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)。功能建议和可公开复现的问题可使用 GitHub Issues；请使用虚构或脱敏数据构造复现样例。
 
-- Windows x64 ZIP
-- Windows x64 Setup.exe 安装器
-- macOS Intel ZIP/DMG
-- macOS Apple Silicon ZIP/DMG
+## License
 
-源码运行没有重量级第三方框架依赖。PyInstaller 只用于构建环境，不需要安装到普通使用者电脑。
-
-当前发布包使用临时签名，没有 Apple Developer/Windows 商业代码签名。macOS
-首次打开时可在 Finder 中右键应用并选择“打开”；Windows 可能显示 SmartScreen
-提示，应先核对下载来源和 Release 校验信息再选择运行。
-
-## 安全说明
-
-- 只使用私有 GitHub 仓库存放会话。
-- 推送前必须确认仓库为私有仓库，并检查所有协作者、部署密钥和访问 Token。
-- 不要把 `.codex` 整个目录提交到 Git。
-- 导入和撤销前必须退出 Codex、ChatGPT 和 Codex++。
-- 一键清理备份会永久移除撤销能力，界面会在执行前再次确认。
-
-## 许可证
-
-MIT
+本项目基于 [MIT License](./LICENSE) 开源。

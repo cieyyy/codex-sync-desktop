@@ -13,6 +13,15 @@ from .redaction import sanitize_record
 from .titles import is_usable_title, read_thread_titles
 
 
+class NoActiveSessionsError(FileNotFoundError):
+    def __init__(self, sessions_path: Path):
+        self.sessions_path = sessions_path
+        super().__init__(
+            "尚未发现 Codex 会话文件。请先打开 ChatGPT/Codex，使用 Codex 完成至少一次对话，"
+            f"系统创建 {sessions_path} 后再进行同步。"
+        )
+
+
 def iter_session_files(codex_home: Path) -> Iterator[tuple[str, Path]]:
     for root_name in ("sessions", "archived_sessions"):
         root = codex_home / root_name
@@ -34,18 +43,20 @@ def iter_active_session_files(codex_home: Path) -> Iterator[tuple[str, Path]]:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return hashlib.sha256(_canonical_text_bytes(path.read_bytes())).hexdigest()
+
+
+def _canonical_text_bytes(content: bytes) -> bytes:
+    """Keep JSONL verification stable when Git converts checkout line endings."""
+    return content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -> ExportReport:
     if not (codex_home / "sessions").is_dir():
-        raise FileNotFoundError(f"Active Codex sessions directory not found: {codex_home / 'sessions'}")
+        raise NoActiveSessionsError(codex_home / "sessions")
     slug = device_slug(device_name)
     device_root = vault / "sessions-text" / "devices" / slug
+    legacy_device_roots = _matching_legacy_device_roots(vault, device_name, slug)
     output_root = device_root / "sessions"
     output_root.mkdir(parents=True, exist_ok=True)
     report = ExportReport(device=device_name, output=device_root)
@@ -94,7 +105,29 @@ def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -
     manifest_path = device_root / "manifest.json"
     encoded = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     report.changed_files += int(_write_if_changed(manifest_path, encoded.encode("utf-8")))
+    for legacy_root in legacy_device_roots:
+        report.changed_files += sum(1 for path in legacy_root.rglob("*") if path.is_file())
+        shutil.rmtree(legacy_root)
     return report
+
+
+def _matching_legacy_device_roots(vault: Path, device_name: str, current_slug: str) -> list[Path]:
+    devices_root = vault / "sessions-text" / "devices"
+    if not devices_root.is_dir():
+        return []
+    matches: list[Path] = []
+    normalized_name = device_name.strip()
+    for candidate in devices_root.iterdir():
+        if not candidate.is_dir() or candidate.name == current_slug:
+            continue
+        manifest_path = candidate / "manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if str(manifest.get("device") or "").strip() == normalized_name:
+            matches.append(candidate)
+    return matches
 
 
 def list_source_devices(vault: Path) -> list[str]:
@@ -102,6 +135,23 @@ def list_source_devices(vault: Path) -> list[str]:
     if not root.exists():
         return []
     return sorted(path.name for path in root.iterdir() if path.is_dir() and (path / "manifest.json").is_file())
+
+
+def list_source_device_options(vault: Path) -> list[tuple[str, str]]:
+    options: list[tuple[str, str]] = []
+    used_labels: set[str] = set()
+    for key in list_source_devices(vault):
+        manifest_path = vault / "sessions-text" / "devices" / key / "manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            manifest = {}
+        label = str(manifest.get("device") or key).strip() or key
+        if label in used_labels:
+            label = f"{label} ({key})"
+        used_labels.add(label)
+        options.append((label, key))
+    return options
 
 
 def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan:
@@ -115,7 +165,8 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
         raise ValueError(f"Invalid manifest: {manifest_path}")
     format_version = int(manifest.get("format", 1))
     source_root = device_root / "sessions"
-    plan = ImportPlan(source_device=source_device)
+    source_label = str(manifest.get("device") or source_device).strip() or source_device
+    plan = ImportPlan(source_device=source_device, source_label=source_label)
     local_titles = read_thread_titles(codex_home)
 
     for entry in entries:

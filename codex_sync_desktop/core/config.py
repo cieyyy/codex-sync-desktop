@@ -5,6 +5,7 @@ import os
 import platform
 import re
 import socket
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict
@@ -28,8 +29,8 @@ def default_app_home() -> Path:
 
 
 def device_slug(name: str | None = None) -> str:
-    value = (name or socket.gethostname()).strip().lower()
-    value = re.sub(r"[^a-z0-9._-]+", "-", value).strip("-.")
+    value = unicodedata.normalize("NFKC", (name or socket.gethostname()).strip()).casefold()
+    value = re.sub(r"[^\w.-]+", "-", value, flags=re.UNICODE).strip("._-")
     return value or "device"
 
 
