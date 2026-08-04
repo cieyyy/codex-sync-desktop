@@ -2,7 +2,7 @@
 
 一个轻量的 Windows/macOS 桌面工具，用 GitHub 私有仓库同步 Codex 对话文本，并修复目标设备的侧栏索引。
 
-面向购买用户的一页式准备材料见 [购买用户首次使用准备清单](docs/CUSTOMER_PREPARATION.md)。
+面向新用户的一页式准备材料见 [新用户首次使用准备清单](docs/CUSTOMER_PREPARATION.md)。
 
 项目的完整设计与实施记录见：
 
