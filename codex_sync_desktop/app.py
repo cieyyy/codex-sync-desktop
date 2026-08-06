@@ -1009,11 +1009,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def configure_cli_output_encoding() -> None:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def main() -> None:
     args = build_parser().parse_args()
     store = SettingsStore()
     settings = store.load()
     if args.diagnose:
+        configure_cli_output_encoding()
         print(diagnostics_json(args.codex_home or settings.codex_path, args.vault or settings.vault, settings.proxy_url))
         return
     if sys.platform == "darwin" and not getattr(sys, "frozen", False) and tk.TkVersion < 8.6:
