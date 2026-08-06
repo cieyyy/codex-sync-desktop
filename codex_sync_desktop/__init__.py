@@ -1,3 +1,3 @@
 """Codex Sync Desktop."""
 
-__version__ = "0.7.2b9"
+__version__ = "0.7.2b10"
