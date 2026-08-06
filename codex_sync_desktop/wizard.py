@@ -32,10 +32,6 @@ from .core.sessions import NoActiveSessionsError, list_source_device_options
 from .ui_theme import COLORS, center_window, vertical_scrollbar_required
 
 
-def checkmark_text(selected: bool, label: str) -> str:
-    return f"{'[✓]' if selected else '[ ]'} {label}"
-
-
 class OnboardingWizard(tk.Toplevel):
     def __init__(self, app: Any, initial_step: int = 0):
         super().__init__(app)
@@ -192,17 +188,12 @@ class OnboardingWizard(tk.Toplevel):
         ttk.Label(parent, text=subtitle, style="PanelMuted.TLabel", wraplength=720, justify="left").pack(anchor="w", pady=(6, 18))
 
     def _checkmark(self, parent: ttk.Frame, label: str, variable: tk.BooleanVar) -> ttk.Checkbutton:
-        display = tk.StringVar(value=checkmark_text(bool(variable.get()), label))
-
-        def refresh(*_args: object) -> None:
-            display.set(checkmark_text(bool(variable.get()), label))
-
-        variable.trace_add("write", refresh)
         return ttk.Checkbutton(
             parent,
-            textvariable=display,
+            text=label,
             variable=variable,
             style="Checkmark.TCheckbutton",
+            takefocus=True,
         )
 
     def _welcome_page(self, page: ttk.Frame) -> None:

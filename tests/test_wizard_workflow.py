@@ -5,10 +5,27 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from codex_sync_desktop.core.sessions import NoActiveSessionsError
-from codex_sync_desktop.wizard import OnboardingWizard, checkmark_text
+from codex_sync_desktop.wizard import OnboardingWizard
 
 
 class WizardWorkflowTests(TestCase):
+    @patch("codex_sync_desktop.wizard.ttk.Checkbutton")
+    def test_confirmation_uses_native_checkbox_indicator(self, checkbutton):
+        parent = object()
+        variable = object()
+        control = checkbutton.return_value
+
+        result = OnboardingWizard._checkmark(SimpleNamespace(), parent, "确认同步", variable)
+
+        self.assertIs(result, control)
+        checkbutton.assert_called_once_with(
+            parent,
+            text="确认同步",
+            variable=variable,
+            style="Checkmark.TCheckbutton",
+            takefocus=True,
+        )
+
     @patch("codex_sync_desktop.wizard.messagebox.showwarning")
     def test_unchecked_private_confirmation_blocks_next_step(self, showwarning):
         confirmation = Mock()
@@ -26,10 +43,6 @@ class WizardWorkflowTests(TestCase):
         self.assertEqual(wizard.step, 0)
         wizard._show_step.assert_not_called()
         showwarning.assert_called_once()
-
-    def test_checkmark_text_uses_empty_and_checked_boxes(self):
-        self.assertEqual(checkmark_text(False, "代理"), "[ ] 代理")
-        self.assertEqual(checkmark_text(True, "代理"), "[✓] 代理")
 
     def test_account_step_is_not_ready_until_all_requirements_pass(self):
         wizard = SimpleNamespace(step=2, account_status={"git": True, "gh": True, "authenticated": False})

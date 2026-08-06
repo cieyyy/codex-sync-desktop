@@ -148,21 +148,27 @@ class CodexSyncApp(tk.Tk):
         style.map("TCombobox", fieldbackground=[("readonly", COLORS["surface_alt"])], selectbackground=[("readonly", COLORS["surface_alt"])], selectforeground=[("readonly", COLORS["text"])])
         style.configure("TCheckbutton", background=COLORS["surface"], foreground=COLORS["text"], indicatorcolor=COLORS["surface_alt"], font=body_font)
         style.map("TCheckbutton", background=[("active", COLORS["surface"])], foreground=[("disabled", COLORS["text_disabled"])], indicatorcolor=[("selected", COLORS["primary"])])
-        style.layout(
-            "Checkmark.TCheckbutton",
-            [("Checkbutton.padding", {"sticky": "nswe", "children": [("Checkbutton.label", {"sticky": "nswe"})]})],
-        )
+        style.layout("Checkmark.TCheckbutton", style.layout("TCheckbutton"))
         style.configure(
             "Checkmark.TCheckbutton",
             background=COLORS["surface"],
             foreground=COLORS["text"],
-            padding=(0, 4),
+            indicatorcolor=COLORS["surface_alt"],
+            indicatorrelief="flat",
+            indicatormargin=(0, 0, 10, 0),
+            padding=(0, 6),
             font=body_font,
         )
         style.map(
             "Checkmark.TCheckbutton",
             background=[("active", COLORS["surface"])],
             foreground=[("disabled", COLORS["text_disabled"]), ("!disabled", COLORS["text"])],
+            indicatorcolor=[
+                ("disabled", COLORS["border"]),
+                ("selected", COLORS["primary"]),
+                ("active", COLORS["secondary"]),
+                ("!selected", COLORS["surface_alt"]),
+            ],
         )
         style.configure("Treeview", rowheight=32, background=COLORS["surface"], fieldbackground=COLORS["surface"], foreground=COLORS["text"], bordercolor=COLORS["border"], lightcolor=COLORS["border"], darkcolor=COLORS["border"], font=body_font)
         style.map("Treeview", background=[("selected", COLORS["secondary"])], foreground=[("selected", COLORS["text"])])
