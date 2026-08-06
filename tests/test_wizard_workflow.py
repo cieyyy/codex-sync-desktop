@@ -77,7 +77,8 @@ class WizardWorkflowTests(TestCase):
         app.store.save.assert_called_once_with(app.settings)
         wizard.destroy.assert_called_once_with()
         app.show_page.assert_called_once_with("sync")
-        self.assertIn("C:\\Users\\test\\.codex\\sessions", showinfo.call_args.args[1])
+        expected_sessions_path = str(Path("C:/Users/test/.codex/sessions"))
+        self.assertIn(expected_sessions_path, showinfo.call_args.args[1])
 
     @patch("codex_sync_desktop.wizard.list_source_device_options", return_value=[("天文", "device")])
     @patch("codex_sync_desktop.wizard.VaultGit")
