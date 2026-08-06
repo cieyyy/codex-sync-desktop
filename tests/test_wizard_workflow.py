@@ -4,11 +4,34 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
+from codex_sync_desktop.app import CHECKMARK_PIXELS, create_checkbox_indicator_image
 from codex_sync_desktop.core.sessions import NoActiveSessionsError
+from codex_sync_desktop.ui_theme import COLORS
 from codex_sync_desktop.wizard import OnboardingWizard
 
 
 class WizardWorkflowTests(TestCase):
+    @patch("codex_sync_desktop.app.tk.PhotoImage")
+    def test_selected_checkbox_indicator_draws_a_checkmark(self, photo_image):
+        image = photo_image.return_value
+        master = object()
+
+        result = create_checkbox_indicator_image(master, selected=True)
+
+        self.assertIs(result, image)
+        photo_image.assert_called_once_with(master=master, width=28, height=18)
+        for x, y in CHECKMARK_PIXELS:
+            image.put.assert_any_call(COLORS["background"], to=(x, y, x + 2, y + 2))
+
+    @patch("codex_sync_desktop.app.tk.PhotoImage")
+    def test_unselected_checkbox_indicator_has_no_checkmark(self, photo_image):
+        image = photo_image.return_value
+
+        create_checkbox_indicator_image(object(), selected=False)
+
+        mark_calls = [call for call in image.put.call_args_list if call.args == (COLORS["background"],)]
+        self.assertEqual(mark_calls, [])
+
     @patch("codex_sync_desktop.wizard.ttk.Checkbutton")
     def test_confirmation_uses_native_checkbox_indicator(self, checkbutton):
         parent = object()

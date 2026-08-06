@@ -53,6 +53,39 @@ def dependency_setup_incomplete(diagnostics: dict[str, Any]) -> bool:
     return not bool(diagnostics.get("git")) or not bool(diagnostics.get("gh"))
 
 
+CHECKMARK_PIXELS = (
+    (4, 8),
+    (5, 9),
+    (6, 10),
+    (7, 11),
+    (8, 10),
+    (9, 9),
+    (10, 8),
+    (11, 7),
+    (12, 6),
+    (13, 5),
+)
+
+
+def create_checkbox_indicator_image(
+    master: tk.Misc,
+    *,
+    selected: bool,
+    disabled: bool = False,
+) -> tk.PhotoImage:
+    """Create a stable checkbox indicator instead of relying on theme glyphs."""
+    image = tk.PhotoImage(master=master, width=28, height=18)
+    border = COLORS["text_disabled"] if disabled else COLORS["text_muted"]
+    fill = COLORS["border"] if disabled else COLORS["primary"]
+    image.put(border, to=(0, 0, 18, 18))
+    image.put(fill if selected else COLORS["surface_alt"], to=(2, 2, 16, 16))
+    if selected:
+        mark = COLORS["text_disabled"] if disabled else COLORS["background"]
+        for x, y in CHECKMARK_PIXELS:
+            image.put(mark, to=(x, y, x + 2, y + 2))
+    return image
+
+
 class CodexSyncApp(tk.Tk):
     def __init__(self, store: SettingsStore | None = None):
         super().__init__()
@@ -148,14 +181,52 @@ class CodexSyncApp(tk.Tk):
         style.map("TCombobox", fieldbackground=[("readonly", COLORS["surface_alt"])], selectbackground=[("readonly", COLORS["surface_alt"])], selectforeground=[("readonly", COLORS["text"])])
         style.configure("TCheckbutton", background=COLORS["surface"], foreground=COLORS["text"], indicatorcolor=COLORS["surface_alt"], font=body_font)
         style.map("TCheckbutton", background=[("active", COLORS["surface"])], foreground=[("disabled", COLORS["text_disabled"])], indicatorcolor=[("selected", COLORS["primary"])])
-        style.layout("Checkmark.TCheckbutton", style.layout("TCheckbutton"))
+        unchecked = create_checkbox_indicator_image(self, selected=False)
+        checked = create_checkbox_indicator_image(self, selected=True)
+        disabled_unchecked = create_checkbox_indicator_image(self, selected=False, disabled=True)
+        disabled_checked = create_checkbox_indicator_image(self, selected=True, disabled=True)
+        self._checkbox_indicator_images = (
+            unchecked,
+            checked,
+            disabled_unchecked,
+            disabled_checked,
+        )
+        style.element_create(
+            "Checkmark.indicator",
+            "image",
+            unchecked,
+            ("disabled selected", disabled_checked),
+            ("disabled", disabled_unchecked),
+            ("selected", checked),
+            border=0,
+            sticky="",
+        )
+        style.layout(
+            "Checkmark.TCheckbutton",
+            [
+                (
+                    "Checkbutton.padding",
+                    {
+                        "sticky": "nswe",
+                        "children": [
+                            ("Checkmark.indicator", {"side": "left", "sticky": ""}),
+                            (
+                                "Checkbutton.focus",
+                                {
+                                    "side": "left",
+                                    "sticky": "w",
+                                    "children": [("Checkbutton.label", {"sticky": "nswe"})],
+                                },
+                            ),
+                        ],
+                    },
+                )
+            ],
+        )
         style.configure(
             "Checkmark.TCheckbutton",
             background=COLORS["surface"],
             foreground=COLORS["text"],
-            indicatorcolor=COLORS["surface_alt"],
-            indicatorrelief="flat",
-            indicatormargin=(0, 0, 10, 0),
             padding=(0, 6),
             font=body_font,
         )
@@ -163,12 +234,6 @@ class CodexSyncApp(tk.Tk):
             "Checkmark.TCheckbutton",
             background=[("active", COLORS["surface"])],
             foreground=[("disabled", COLORS["text_disabled"]), ("!disabled", COLORS["text"])],
-            indicatorcolor=[
-                ("disabled", COLORS["border"]),
-                ("selected", COLORS["primary"]),
-                ("active", COLORS["secondary"]),
-                ("!selected", COLORS["surface_alt"]),
-            ],
         )
         style.configure("Treeview", rowheight=32, background=COLORS["surface"], fieldbackground=COLORS["surface"], foreground=COLORS["text"], bordercolor=COLORS["border"], lightcolor=COLORS["border"], darkcolor=COLORS["border"], font=body_font)
         style.map("Treeview", background=[("selected", COLORS["secondary"])], foreground=[("selected", COLORS["text"])])
