@@ -5,12 +5,12 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from codex_sync_desktop.core.sessions import NoActiveSessionsError
-from codex_sync_desktop.wizard import OnboardingWizard
+from codex_sync_desktop.wizard import OnboardingWizard, checkmark_text
 
 
 class WizardWorkflowTests(TestCase):
-    @patch("codex_sync_desktop.wizard.messagebox.showinfo")
-    def test_unchecked_private_confirmation_is_checked_and_advances(self, showinfo):
+    @patch("codex_sync_desktop.wizard.messagebox.showwarning")
+    def test_unchecked_private_confirmation_blocks_next_step(self, showwarning):
         confirmation = Mock()
         confirmation.get.return_value = False
         wizard = SimpleNamespace(
@@ -22,10 +22,41 @@ class WizardWorkflowTests(TestCase):
 
         OnboardingWizard._next(wizard)
 
-        confirmation.set.assert_called_once_with(True)
-        self.assertEqual(wizard.step, 1)
-        wizard._show_step.assert_called_once_with()
-        showinfo.assert_called_once()
+        confirmation.set.assert_not_called()
+        self.assertEqual(wizard.step, 0)
+        wizard._show_step.assert_not_called()
+        showwarning.assert_called_once()
+
+    def test_checkmark_text_uses_empty_and_checked_boxes(self):
+        self.assertEqual(checkmark_text(False, "代理"), "[ ] 代理")
+        self.assertEqual(checkmark_text(True, "代理"), "[✓] 代理")
+
+    def test_account_step_is_not_ready_until_all_requirements_pass(self):
+        wizard = SimpleNamespace(step=2, account_status={"git": True, "gh": True, "authenticated": False})
+
+        self.assertFalse(OnboardingWizard._step_ready(wizard))
+
+        wizard.account_status["authenticated"] = True
+        self.assertTrue(OnboardingWizard._step_ready(wizard))
+
+    def test_repository_step_requires_all_configuration_fields(self):
+        wizard = SimpleNamespace(
+            step=3,
+            network_ok=True,
+            account_status={"git": True, "gh": True, "authenticated": True},
+            repositories_loading=False,
+            repository_mode=SimpleNamespace(get=lambda: "existing"),
+            repository_reference=SimpleNamespace(get=lambda: ""),
+            repository_name=SimpleNamespace(get=lambda: "unused"),
+            local_path=SimpleNamespace(get=lambda: "C:/sync"),
+            codex_home=SimpleNamespace(get=lambda: "C:/Users/test/.codex"),
+            device_name=SimpleNamespace(get=lambda: "Office PC"),
+        )
+
+        self.assertFalse(OnboardingWizard._step_ready(wizard))
+
+        wizard.repository_reference = SimpleNamespace(get=lambda: "owner/private-vault")
+        self.assertTrue(OnboardingWizard._step_ready(wizard))
 
     @patch("codex_sync_desktop.wizard.messagebox.showinfo")
     def test_missing_sessions_finishes_onboarding_and_shows_guidance(self, showinfo):

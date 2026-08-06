@@ -70,6 +70,8 @@ class RepairReport:
     scanned: int = 0
     inserted: int = 0
     updated: int = 0
+    catalog_inserted: int = 0
+    catalog_updated: int = 0
     index_entries: int = 0
     skipped: int = 0
     backup_dir: Optional[Path] = None

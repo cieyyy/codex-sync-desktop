@@ -26,6 +26,20 @@ class PlatformDescriptionTests(TestCase):
 
 
 class RemediationTests(TestCase):
+    @patch.object(diagnostics, "github_auth_status")
+    @patch.object(diagnostics, "command_available", return_value=True)
+    def test_collect_diagnostics_reports_invalid_model_provider(self, _available, auth_status) -> None:
+        auth_status.return_value = SimpleNamespace(ok=True)
+        with TemporaryDirectory() as temporary:
+            codex_home = Path(temporary)
+            (codex_home / "config.toml").write_text('model_provider = "custom"\n', encoding="utf-8")
+
+            report = diagnostics.collect_diagnostics(codex_home)
+
+        self.assertFalse(report["model_provider_config_valid"])
+        self.assertEqual(report["model_provider"], "custom")
+        self.assertIn("model_providers.custom", report["model_provider_config_reason"])
+
     def test_empty_codex_home_does_not_report_missing_sidebar_index(self) -> None:
         report = {
             "sessions": 0,

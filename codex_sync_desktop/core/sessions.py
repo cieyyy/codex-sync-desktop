@@ -86,6 +86,8 @@ def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -
             "sha256": result["sha256"],
             "bytes": result["bytes"],
         }
+        if result.get("original_model_provider"):
+            entry["original_model_provider"] = result["original_model_provider"]
         if is_usable_title(titles.get(task_id, "")):
             entry["title"] = titles[task_id]
         manifest_sessions.append(entry)
@@ -297,6 +299,7 @@ def conversation_signature(path: Path) -> list[tuple[str, str]]:
 def _sanitized_bytes(source: Path) -> tuple[bytes, Dict[str, Any]]:
     lines = []
     kept = omitted = invalid = media = secrets = 0
+    original_model_provider = ""
     with source.open("r", encoding="utf-8", errors="replace") as handle:
         for raw_line in handle:
             if not raw_line.strip():
@@ -306,6 +309,8 @@ def _sanitized_bytes(source: Path) -> tuple[bytes, Dict[str, Any]]:
             except ValueError:
                 invalid += 1
                 continue
+            if item.get("type") == "session_meta" and not original_model_provider:
+                original_model_provider = str((item.get("payload") or {}).get("model_provider") or "").strip()
             clean, media_count, secret_count = sanitize_record(item)
             media += media_count
             secrets += secret_count
@@ -320,6 +325,7 @@ def _sanitized_bytes(source: Path) -> tuple[bytes, Dict[str, Any]]:
         "bytes": len(encoded), "sha256": digest,
         "kept": kept, "omitted": omitted, "invalid": invalid,
         "media": media, "secrets": secrets,
+        "original_model_provider": original_model_provider,
     }
 
 

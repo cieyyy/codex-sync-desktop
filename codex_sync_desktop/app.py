@@ -26,6 +26,7 @@ from .core.backups import (
     rollback_import_transaction,
 )
 from .core.config import SettingsStore, device_slug
+from .core.config_health import repair_model_provider_to_openai
 from .core.diagnostics import collect_diagnostics, diagnostics_json, remediation_text, session_index_summary
 from .core.git_client import VaultGit, compact_failure_reason, summarize_pull
 from .core.import_preview import apply_title_overrides, items_for_category
@@ -67,6 +68,7 @@ class CodexSyncApp(tk.Tk):
         self.nav_buttons: dict[str, ttk.Button] = {}
         self._busy = False
         self._dependency_prompted = False
+        self._config_prompted = False
         self.title(f"Codex Sync Desktop {__version__}")
         self.geometry("1120x760")
         self.minsize(920, 640)
@@ -146,6 +148,22 @@ class CodexSyncApp(tk.Tk):
         style.map("TCombobox", fieldbackground=[("readonly", COLORS["surface_alt"])], selectbackground=[("readonly", COLORS["surface_alt"])], selectforeground=[("readonly", COLORS["text"])])
         style.configure("TCheckbutton", background=COLORS["surface"], foreground=COLORS["text"], indicatorcolor=COLORS["surface_alt"], font=body_font)
         style.map("TCheckbutton", background=[("active", COLORS["surface"])], foreground=[("disabled", COLORS["text_disabled"])], indicatorcolor=[("selected", COLORS["primary"])])
+        style.layout(
+            "Checkmark.TCheckbutton",
+            [("Checkbutton.padding", {"sticky": "nswe", "children": [("Checkbutton.label", {"sticky": "nswe"})]})],
+        )
+        style.configure(
+            "Checkmark.TCheckbutton",
+            background=COLORS["surface"],
+            foreground=COLORS["text"],
+            padding=(0, 4),
+            font=body_font,
+        )
+        style.map(
+            "Checkmark.TCheckbutton",
+            background=[("active", COLORS["surface"])],
+            foreground=[("disabled", COLORS["text_disabled"]), ("!disabled", COLORS["text"])],
+        )
         style.configure("Treeview", rowheight=32, background=COLORS["surface"], fieldbackground=COLORS["surface"], foreground=COLORS["text"], bordercolor=COLORS["border"], lightcolor=COLORS["border"], darkcolor=COLORS["border"], font=body_font)
         style.map("Treeview", background=[("selected", COLORS["secondary"])], foreground=[("selected", COLORS["text"])])
         style.configure("Treeview.Heading", font=section_font, background=COLORS["surface_alt"], foreground=COLORS["cyan"], bordercolor=COLORS["border"], padding=(8, 7))
@@ -380,12 +398,16 @@ class CodexSyncApp(tk.Tk):
         codex_detail = diagnostics["codex_home"] if diagnostics["codex_home_exists"] else "在“日志与设置”中选择当前用户的 .codex 目录"
         database_detail = ", ".join(Path(item).name for item in diagnostics["databases"]) or "先启动一次 Codex，再刷新检查"
         index_status, index_detail = session_index_summary(diagnostics)
+        provider_valid = bool(diagnostics.get("model_provider_config_valid", True))
+        provider_status = "正常" if provider_valid else "配置错误"
+        provider_detail = str(diagnostics.get("model_provider_config_reason") or "使用默认 openai")
         vault_detail = str(self.settings.vault or "") if diagnostics.get("vault_exists") else "在“日志与设置”中选择或克隆同步仓库"
         rows = [
             ("Codex 数据目录", "正常" if diagnostics["codex_home_exists"] else "未找到", codex_detail),
             ("本机会话", str(diagnostics["sessions"]), "JSONL 会话文件"),
             ("状态数据库", str(len(diagnostics["databases"])), database_detail),
             ("侧栏索引", index_status, index_detail),
+            ("模型供应商配置", provider_status, provider_detail),
             ("Git", "正常" if diagnostics["git"] else "缺失（必需）", git_detail),
             ("Git LFS", lfs_status, lfs_detail),
             ("GitHub CLI", gh_status, gh_detail),
@@ -394,6 +416,9 @@ class CodexSyncApp(tk.Tk):
         ]
         for row in rows:
             self.overview_tree.insert("", "end", values=row)
+        if not provider_valid and not self._config_prompted:
+            self._config_prompted = True
+            self.after_idle(lambda: self._offer_model_provider_repair(diagnostics))
         if (
             self.settings.onboarding_complete
             and not self._dependency_prompted
@@ -406,6 +431,28 @@ class CodexSyncApp(tk.Tk):
                 refresh()
             except Exception:
                 self.logger.exception("刷新%s失败", label)
+
+    def _offer_model_provider_repair(self, diagnostics: dict[str, Any]) -> None:
+        reason = str(diagnostics.get("model_provider_config_reason") or "config.toml 模型供应商无效")
+        selected = str(diagnostics.get("model_provider") or "")
+        message = (
+            f"检测到 Codex 无法加载模型供应商配置：\n\n{reason}\n\n"
+            "这会导致已导入会话能被搜索到，但打开后无法继续，也不会进入最近会话。\n\n"
+            f"是否将顶层 model_provider 从 {selected or '无效值'} 切换为内置 openai？\n"
+            "软件会先备份 config.toml，不会修改 Token、代理或其他供应商定义。"
+        )
+        if not messagebox.askyesno("修复 Codex 模型配置", message):
+            return
+        try:
+            backup = repair_model_provider_to_openai(self.settings.codex_path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("修复失败", str(exc))
+            return
+        messagebox.showinfo(
+            "修复完成",
+            f"已切换到内置 openai。\n备份：{backup}\n\n请完全退出并重新打开 ChatGPT/Codex，再从搜索结果打开该会话。",
+        )
+        self.refresh_all()
 
     def show_remediation(self) -> None:
         diagnostics = self.last_diagnostics or {
@@ -699,7 +746,7 @@ class CodexSyncApp(tk.Tk):
                 f"自动合并：{len(result['merged'])}\n"
                 f"相同：{plan.counts.get('identical', 0)}\n"
                 f"标题更新：{len(plan.title_updates)}\n"
-                f"侧栏新增：{repair.inserted}\n"
+                f"侧栏新增：{max(repair.inserted, repair.catalog_inserted)}\n"
                 "失败：0"
             )
         self._run_task("导入并修复", work, self.refresh_all)

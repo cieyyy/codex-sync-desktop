@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/icon.svg" width="112" alt="Codex Sync Desktop icon">
+  <img src="./assets/logo.svg" width="112" alt="Codex Sync Desktop icon">
 </p>
 
 <h1 align="center">Codex Sync Desktop</h1>
@@ -12,7 +12,7 @@
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-%3E%3D3.9-3776AB.svg">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-36BFFA.svg">
-  <img alt="Release" src="https://img.shields.io/badge/release-v0.7.2%20Beta%207-2457E6.svg">
+  <img alt="Release" src="https://img.shields.io/badge/release-v0.7.2%20Beta%208-2457E6.svg">
 </p>
 
 <p align="center">
@@ -136,7 +136,7 @@ python -m unittest discover -s tests -v
 
 ## 项目状态与路线
 
-当前版本为 `v0.7.2 Beta 7`，重点是跨设备首次连接、旧清单兼容、设备名称和完整会话恢复。
+当前版本为 `v0.7.2 Beta 8`，重点是跨设备路径重定位、新旧侧栏索引同步修复、模型供应商兼容和首次配置就绪校验。
 
 - `v0.7.x`：首次配置、内容合并、标题/索引修复、事务撤销；
 - 后续：跨设备永久排除规则、仓库容量诊断、更多真实设备端到端验证；

@@ -32,6 +32,10 @@ from .core.sessions import NoActiveSessionsError, list_source_device_options
 from .ui_theme import COLORS, center_window, vertical_scrollbar_required
 
 
+def checkmark_text(selected: bool, label: str) -> str:
+    return f"{'[✓]' if selected else '[ ]'} {label}"
+
+
 class OnboardingWizard(tk.Toplevel):
     def __init__(self, app: Any, initial_step: int = 0):
         super().__init__(app)
@@ -56,6 +60,7 @@ class OnboardingWizard(tk.Toplevel):
         self.repository_reference = tk.StringVar(value=existing_remote)
         self.repositories_loaded = False
         self.repositories_loading = False
+        self.setup_in_progress = False
         self._page_scrollbar_visible = False
         self._page_scroll_update_pending = False
         default_vault = app.settings.vault_path or str(Path.home() / "Documents" / "CodexSync" / "codex-sync-vault")
@@ -63,6 +68,16 @@ class OnboardingWizard(tk.Toplevel):
         self.codex_home = tk.StringVar(value=app.settings.codex_home)
         self.device_name = tk.StringVar(value=app.settings.device_name)
         self.proxy_url.trace_add("write", lambda *_args: self._invalidate_network())
+        for variable in (
+            self.confirm_private,
+            self.repository_mode,
+            self.repository_reference,
+            self.repository_name,
+            self.local_path,
+            self.codex_home,
+            self.device_name,
+        ):
+            variable.trace_add("write", self._update_next_state)
         self._build()
         center_window(self, app, 900, 700)
         self.deiconify()
@@ -176,6 +191,20 @@ class OnboardingWizard(tk.Toplevel):
         ttk.Label(parent, text=title, style="PanelSection.TLabel").pack(anchor="w")
         ttk.Label(parent, text=subtitle, style="PanelMuted.TLabel", wraplength=720, justify="left").pack(anchor="w", pady=(6, 18))
 
+    def _checkmark(self, parent: ttk.Frame, label: str, variable: tk.BooleanVar) -> ttk.Checkbutton:
+        display = tk.StringVar(value=checkmark_text(bool(variable.get()), label))
+
+        def refresh(*_args: object) -> None:
+            display.set(checkmark_text(bool(variable.get()), label))
+
+        variable.trace_add("write", refresh)
+        return ttk.Checkbutton(
+            parent,
+            textvariable=display,
+            variable=variable,
+            style="Checkmark.TCheckbutton",
+        )
+
     def _welcome_page(self, page: ttk.Frame) -> None:
         self._heading(page, "准备安全的同步空间", "向导会检查网络和必要工具，登录 GitHub，创建仅你可见的私有仓库，并完成本机配置。")
         items = (
@@ -188,15 +217,15 @@ class OnboardingWizard(tk.Toplevel):
             row.pack(fill="x", pady=7)
             ttk.Label(row, text=str(index), style="Status.TLabel", width=3, anchor="center").pack(side="left")
             ttk.Label(row, text=item, style="Panel.TLabel", wraplength=650, justify="left").pack(side="left", padx=12)
-        ttk.Checkbutton(
+        self._checkmark(
             page,
-            text="我确认同步仓库必须保持私有，并理解会话文字可能包含敏感信息。",
-            variable=self.confirm_private,
+            "我确认同步仓库必须保持私有，并理解会话文字可能包含敏感信息。",
+            self.confirm_private,
         ).pack(anchor="w", pady=(24, 0))
 
     def _network_page(self, page: ttk.Frame) -> None:
         self._heading(page, "检查 GitHub 网络连接", "中国大陆网络可能无法直接访问 GitHub。请先启动符合所在地法律和组织规定的代理工具，再填写本机 HTTP 代理地址。")
-        ttk.Checkbutton(page, text="我位于中国大陆或当前网络需要代理", variable=self.china_mode).pack(anchor="w", pady=(0, 14))
+        self._checkmark(page, "我位于中国大陆或当前网络需要代理", self.china_mode).pack(anchor="w", pady=(0, 14))
         form = ttk.Frame(page, style="Panel.TFrame")
         form.pack(fill="x")
         ttk.Label(form, text="本机代理地址", style="Panel.TLabel", width=16).grid(row=0, column=0, sticky="w")
@@ -296,7 +325,39 @@ class OnboardingWizard(tk.Toplevel):
             self._refresh_account()
         if self.step == 3:
             self._toggle_repository_mode()
+        self._update_next_state()
         self.after_idle(self._reset_page_scroll)
+
+    def _step_ready(self) -> bool:
+        if self.step == 0:
+            return bool(self.confirm_private.get())
+        if self.step == 1:
+            return bool(self.network_ok)
+        account_ready = all(self.account_status.get(key) for key in ("git", "gh", "authenticated"))
+        if self.step == 2:
+            return account_ready
+        if self.step == 3:
+            repository_value = (
+                self.repository_reference.get().strip()
+                if self.repository_mode.get() == "existing"
+                else self.repository_name.get().strip()
+            )
+            return bool(
+                self.network_ok
+                and account_ready
+                and not self.repositories_loading
+                and repository_value
+                and self.local_path.get().strip()
+                and self.codex_home.get().strip()
+                and self.device_name.get().strip()
+            )
+        return False
+
+    def _update_next_state(self, *_args: object) -> None:
+        if not hasattr(self, "next_button"):
+            return
+        state = "disabled" if self.setup_in_progress or not self._step_ready() else "normal"
+        self.next_button.configure(state=state)
 
     def _toggle_repository_mode(self) -> None:
         if not hasattr(self, "repository_choice_host"):
@@ -315,6 +376,7 @@ class OnboardingWizard(tk.Toplevel):
                 else "仓库不存在时才会创建；同名私有仓库已存在时会安全复用。"
             )
             self.repository_status.configure(text=text)
+        self._update_next_state()
         self._schedule_page_scroll_update()
         if existing and self.step == 3 and hasattr(self, "next_button") and not self.repositories_loaded:
             self._refresh_repositories()
@@ -328,6 +390,7 @@ class OnboardingWizard(tk.Toplevel):
             messagebox.showerror("代理地址错误", str(exc), parent=self)
             return
         self.repositories_loading = True
+        self._update_next_state()
         self.repository_status.configure(text="正在读取当前 GitHub 账号可访问的私有仓库...")
         self.app._run_task(
             "读取私有仓库",
@@ -348,10 +411,12 @@ class OnboardingWizard(tk.Toplevel):
             self.repository_status.configure(text=f"已读取 {len(repositories)} 个私有仓库。请选择一个，或手动输入 owner/repository。")
         else:
             self.repository_status.configure(text="当前账号没有返回可访问的私有仓库；可切换为创建新仓库。")
+        self._update_next_state()
 
     def _repository_list_failed(self, exc: Exception) -> None:
         self.repositories_loading = False
         self.repository_status.configure(text=f"读取私有仓库失败：{exc}\n仍可手动输入 owner/repository 后继续验证。")
+        self._update_next_state()
 
     def _back(self) -> None:
         if self.step:
@@ -360,12 +425,8 @@ class OnboardingWizard(tk.Toplevel):
 
     def _next(self) -> None:
         if self.step == 0 and not self.confirm_private.get():
-            messagebox.showinfo(
-                "安全确认",
-                "已为你勾选安全确认。同步仓库必须保持私有，会话文字可能包含敏感信息。",
-                parent=self,
-            )
-            self.confirm_private.set(True)
+            messagebox.showwarning("尚未就绪", "请先勾选私有仓库和敏感信息确认。", parent=self)
+            return
         if self.step == 1 and not self.network_ok:
             messagebox.showwarning("网络尚未通过", "请先测试 GitHub 连接；需要代理时先启动代理并填写地址。", parent=self)
             return
@@ -383,6 +444,7 @@ class OnboardingWizard(tk.Toplevel):
         self.network_ok = False
         if hasattr(self, "network_status"):
             self.network_status.configure(text="代理设置已变化，请重新测试")
+        self._update_next_state()
 
     def _detect_proxy(self) -> None:
         proxy = detect_system_proxy()
@@ -397,6 +459,8 @@ class OnboardingWizard(tk.Toplevel):
         except ValueError as exc:
             messagebox.showerror("代理地址错误", str(exc), parent=self)
             return
+        self.network_ok = False
+        self._update_next_state()
         self.network_status.configure(text="正在测试 GitHub API...")
         self.app._run_task("测试 GitHub 网络", lambda: check_github_connectivity(proxy), self._show_network_result, callback_with_result=True)
 
@@ -411,6 +475,7 @@ class OnboardingWizard(tk.Toplevel):
         else:
             hint = "请确认代理已启动、HTTP 端口正确，并允许本软件访问网络。" if self.proxy_url.get().strip() else "请检查网络；中国大陆或受限网络请先启动合规代理并填写 HTTP 地址。"
             self.network_status.configure(text=f"连接失败：{result.reason}\n{hint}")
+        self._update_next_state()
 
     def _launch_login(self) -> None:
         try:
@@ -528,6 +593,8 @@ class OnboardingWizard(tk.Toplevel):
         except ValueError as exc:
             messagebox.showerror("代理地址错误", str(exc), parent=self)
             return
+        self.account_status = {}
+        self._update_next_state()
         self.app._run_task(
             "检查 GitHub 登录",
             lambda: github_setup_status(proxy, self.app.store.app_home),
@@ -549,6 +616,7 @@ class OnboardingWizard(tk.Toplevel):
             clear_tool_installer_cache(self.app.store.app_home)
             gh_path = str(status.get("gh_path") or "系统 PATH")
             self.dependency_status.configure(text=f"必要工具已安装并通过实际启动检测。GitHub CLI：{gh_path}")
+        self._update_next_state()
 
     def _finish_setup(self) -> None:
         try:
@@ -573,6 +641,7 @@ class OnboardingWizard(tk.Toplevel):
             messagebox.showerror("配置不完整", str(exc), parent=self)
             return
         existing = mode == "existing"
+        self.setup_in_progress = True
         self.repository_status.configure(text="正在验证并连接已有私有仓库..." if existing else "正在创建并验证私有仓库...")
         self.back_button.configure(state="disabled")
         self.next_button.configure(state="disabled", text="正在连接已有仓库..." if existing else "正在创建私有仓库...")
@@ -644,10 +713,12 @@ class OnboardingWizard(tk.Toplevel):
         )
 
     def _setup_failed(self, exc: Exception) -> None:
+        self.setup_in_progress = False
         action = "连接" if self.repository_mode.get() == "existing" else "创建"
         self.repository_status.configure(text=f"{action}失败：{exc}\n请检查上方配置后点击重试。")
         self.back_button.configure(state="normal")
-        self.next_button.configure(state="normal", text=f"重试{action}并首次同步")
+        self.next_button.configure(text=f"重试{action}并首次同步")
+        self._update_next_state()
 
     def _initial_sync_failed(self, exc: Exception) -> None:
         if isinstance(exc, NoActiveSessionsError):
@@ -664,9 +735,11 @@ class OnboardingWizard(tk.Toplevel):
                 parent=self.app,
             )
             return
+        self.setup_in_progress = False
         self.repository_status.configure(text=f"仓库已安全连接，但首次同步失败：{exc}\n配置已保留，检查网络后点击重试。")
         self.back_button.configure(state="normal")
-        self.next_button.configure(state="normal", text="重试首次同步")
+        self.next_button.configure(text="重试首次同步")
+        self._update_next_state()
 
     def _choose_directory(self, variable: tk.StringVar) -> None:
         selected = filedialog.askdirectory(initialdir=variable.get() or str(Path.home()), parent=self)

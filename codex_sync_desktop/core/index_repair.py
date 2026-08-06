@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 
 from .backups import create_consistent_backup, find_state_databases, select_state_database
+from .config_health import resolve_session_model_provider
 from .models import RepairReport, SessionInfo
 from .pathmap import map_path
 from .sessions import iter_session_files
@@ -79,6 +80,8 @@ def repair_indexes(
         else:
             report.skipped += 1
     sessions, duplicate_count = _select_canonical_sessions(sessions)
+    for session in sessions:
+        session.model_provider = resolve_session_model_provider(codex_home, session.model_provider)
     if duplicate_count:
         report.warnings.append(
             f"发现 {duplicate_count} 个同会话 ID 的额外文件；侧栏按活动状态、内容完整度和更新时间选择代表文件，原文件均保留"
@@ -119,6 +122,13 @@ def repair_indexes(
                 db_names[session.session_id] = session.title
         connection.commit()
     _write_session_index(codex_home / "session_index.jsonl", sessions, resolved_names)
+    catalog_database = _find_catalog_database(codex_home)
+    if catalog_database is not None:
+        report.catalog_inserted, report.catalog_updated = _repair_local_thread_catalog(
+            catalog_database,
+            sessions,
+            resolved_names,
+        )
     report.index_entries = len(sessions)
     if len(databases) > 1:
         report.warnings.append(f"Updated {database.name}; found {len(databases)} databases with threads tables")
@@ -193,6 +203,7 @@ def _update_existing(connection: sqlite3.Connection, columns: set[str], session:
         "rollout_path": str(session.path), "cwd": session.cwd, "updated_at": session.updated_at,
         "updated_at_ms": session.updated_at * 1000, "recency_at": session.updated_at,
         "recency_at_ms": session.updated_at * 1000, "title": session.title, "name": session.title,
+        "model_provider": session.model_provider,
     }
     selected = {key: value for key, value in allowed.items() if key in columns}
     if not selected:
@@ -242,6 +253,97 @@ def _has_threads_table(path: Path) -> bool:
             return row is not None
     except sqlite3.Error:
         return False
+
+
+def _find_catalog_database(codex_home: Path) -> Path | None:
+    candidates = find_state_databases(codex_home)
+    preferred = sorted(candidates, key=lambda path: (path.name != "codex-dev.db", str(path)))
+    for path in preferred:
+        try:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
+                row = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_thread_catalog'"
+                ).fetchone()
+                if row is not None:
+                    return path
+        except sqlite3.Error:
+            continue
+    return None
+
+
+def _repair_local_thread_catalog(
+    database: Path,
+    sessions: Iterable[SessionInfo],
+    resolved_names: Mapping[str, str],
+) -> tuple[int, int]:
+    inserted = 0
+    updated = 0
+    with closing(sqlite3.connect(str(database))) as connection:
+        connection.execute(
+            "INSERT OR IGNORE INTO local_thread_catalog_hosts (host_id, host_kind) VALUES ('local', 'local')"
+        )
+        sequence_row = connection.execute(
+            "SELECT observation_sequence FROM local_thread_catalog_sync_state WHERE host_id='local'"
+        ).fetchone()
+        observation_sequence = int(sequence_row[0]) if sequence_row else 0
+        for session in sessions:
+            exists = connection.execute(
+                "SELECT 1 FROM local_thread_catalog WHERE host_id='local' AND thread_id=?",
+                (session.session_id,),
+            ).fetchone()
+            values = (
+                resolved_names.get(session.session_id, session.title),
+                float(session.created_at),
+                float(session.updated_at),
+                session.cwd,
+                session.source or "unknown",
+                str(session.path),
+                session.model_provider or "openai",
+                observation_sequence,
+                "subagent" if "subagent" in (session.source or "").lower() else "user",
+                session.session_id,
+            )
+            if exists:
+                cursor = connection.execute(
+                    """
+                    UPDATE local_thread_catalog
+                    SET display_title=?, source_created_at=?, source_updated_at=?, cwd=?,
+                        source_kind=?, source_detail=?, model_provider=?, observation_sequence=?,
+                        missing_candidate=0, thread_source=?
+                    WHERE host_id='local' AND thread_id=?
+                    """,
+                    values,
+                )
+                updated += 1 if cursor.rowcount else 0
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO local_thread_catalog (
+                        host_id, thread_id, display_title, source_created_at, source_updated_at,
+                        cwd, source_kind, source_detail, model_provider, git_branch,
+                        observation_sequence, missing_candidate, thread_source
+                    ) VALUES ('local', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?)
+                    """,
+                    (
+                        session.session_id,
+                        resolved_names.get(session.session_id, session.title),
+                        float(session.created_at),
+                        float(session.updated_at),
+                        session.cwd,
+                        session.source or "unknown",
+                        str(session.path),
+                        session.model_provider or "openai",
+                        observation_sequence,
+                        "subagent" if "subagent" in (session.source or "").lower() else "user",
+                    ),
+                )
+                inserted += 1
+        if inserted or updated:
+            connection.execute(
+                "UPDATE local_thread_catalog_metadata SET catalog_revision = catalog_revision + 1 WHERE id=1"
+            )
+        connection.commit()
+    return inserted, updated
 
 
 def _extract_user_text(item: Mapping[str, Any]) -> str:

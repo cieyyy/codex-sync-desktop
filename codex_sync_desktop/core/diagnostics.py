@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .backups import find_state_databases
+from .config_health import inspect_model_provider_config
 from .git_client import command_available, github_auth_status, run
 from .processes import running_codex_processes
 from .sessions import iter_session_files
@@ -67,6 +68,12 @@ def remediation_text(diagnostics: Dict[str, Any]) -> str:
         required.append("状态数据库：先启动一次 Codex；如果仍缺失，检查设置中的 Codex 数据目录。")
     if not diagnostics.get("session_index") and int(diagnostics.get("sessions") or 0) > 0:
         required.append("侧栏索引：完成会话导入后执行“导入并修复归档”，或使用 Codex++ 修复历史会话。")
+    if diagnostics.get("model_provider_config_valid") is False:
+        required.append(
+            "Codex 模型配置："
+            + str(diagnostics.get("model_provider_config_reason") or "config.toml 无效")
+            + "。请确认切换到内置 openai，或手动补齐对应的 [model_providers.<名称>]。"
+        )
     if not diagnostics.get("git"):
         required.append(f"Git（同步必需）：\n{git_install}")
     if not diagnostics.get("vault_exists"):
@@ -101,6 +108,7 @@ def collect_diagnostics(codex_home: Path, vault: Path | None = None, proxy_url: 
     sessions = sum(1 for _ in iter_session_files(codex_home)) if codex_home.exists() else 0
     databases = find_state_databases(codex_home) if codex_home.exists() else []
     gh_status = github_auth_status(proxy_url)
+    provider_status = inspect_model_provider_config(codex_home)
     result: Dict[str, Any] = {
         "platform": platform_description(),
         "codex_home": str(codex_home),
@@ -109,6 +117,10 @@ def collect_diagnostics(codex_home: Path, vault: Path | None = None, proxy_url: 
         "databases": [str(path) for path in databases],
         "session_index": (codex_home / "session_index.jsonl").exists(),
         "session_index_required": sessions > 0,
+        "model_provider_config_valid": provider_status.valid,
+        "model_provider": provider_status.selected,
+        "model_provider_config_reason": provider_status.reason,
+        "model_provider_config_path": str(provider_status.path),
         "git": command_available("git"),
         "git_lfs": command_available("git-lfs"),
         "git_lfs_required": vault_uses_lfs(vault),

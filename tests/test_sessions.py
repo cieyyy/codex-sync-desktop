@@ -95,6 +95,24 @@ class SessionSyncTests(unittest.TestCase):
             self.assertEqual(plan.items[0].source_title, "Renamed on Mac")
             self.assertEqual(plan.items[0].local_title, "Old Windows name")
 
+    def test_export_manifest_records_original_model_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_home = root / "source"
+            vault = root / "vault"
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            session = write_session(source_home, session_id)
+            records = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
+            records[0]["payload"]["model_provider"] = "team_proxy"
+            session.write_text("".join(json.dumps(item) + "\n" for item in records), encoding="utf-8")
+
+            export_sanitized_sessions(source_home, vault, "Office Mac")
+
+            manifest = json.loads(
+                (vault / "sessions-text" / "devices" / "office-mac" / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["sessions"][0]["original_model_provider"], "team_proxy")
+
     def test_export_migrates_legacy_generic_slug_for_same_named_device(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

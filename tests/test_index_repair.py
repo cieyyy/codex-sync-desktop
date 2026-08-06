@@ -85,6 +85,55 @@ class IndexRepairTests(unittest.TestCase):
             index = [json.loads(line) for line in (codex_home / "session_index.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual(index[0]["thread_name"], "Renamed on source")
 
+    def test_unavailable_source_provider_is_normalized_to_local_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            database = create_state_database(codex_home)
+            (codex_home / "config.toml").write_text('model_provider = "openai"\n', encoding="utf-8")
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            session = write_session(codex_home, session_id, "Provider compatibility")
+            records = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
+            records[0]["payload"]["model_provider"] = "custom"
+            session.write_text("".join(json.dumps(item) + "\n" for item in records), encoding="utf-8")
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute(
+                    "INSERT INTO threads (id,rollout_path,created_at,updated_at,source,model_provider,cwd,title,sandbox_policy,approval_mode) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (session_id, "old", 1, 1, "app", "custom", "/old", "Provider compatibility", "{}", "never"),
+                )
+                connection.commit()
+
+            repair_indexes(codex_home, create_backup=False)
+
+            with closing(sqlite3.connect(database)) as connection:
+                provider = connection.execute(
+                    "SELECT model_provider FROM threads WHERE id=?", (session_id,)
+                ).fetchone()[0]
+            self.assertEqual(provider, "openai")
+            unchanged = json.loads(session.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(unchanged["payload"]["model_provider"], "custom")
+
+    def test_configured_custom_source_provider_is_preserved_in_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            database = create_state_database(codex_home)
+            (codex_home / "config.toml").write_text(
+                'model_provider = "openai"\n\n[model_providers.team_proxy]\nname = "Team Proxy"\nbase_url = "https://example.test"\n',
+                encoding="utf-8",
+            )
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            session = write_session(codex_home, session_id)
+            records = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
+            records[0]["payload"]["model_provider"] = "team_proxy"
+            session.write_text("".join(json.dumps(item) + "\n" for item in records), encoding="utf-8")
+
+            repair_indexes(codex_home, create_backup=False)
+
+            with closing(sqlite3.connect(database)) as connection:
+                provider = connection.execute(
+                    "SELECT model_provider FROM threads WHERE id=?", (session_id,)
+                ).fetchone()[0]
+            self.assertEqual(provider, "team_proxy")
+
     def test_modern_codex_database_is_preferred_over_legacy_state_file(self):
         with tempfile.TemporaryDirectory() as directory:
             codex_home = Path(directory) / ".codex"
@@ -101,6 +150,108 @@ class IndexRepairTests(unittest.TestCase):
 
             with closing(sqlite3.connect(modern)) as connection:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM threads WHERE id=?", (session_id,)).fetchone()[0], 1)
+
+    def test_repairs_modern_local_thread_catalog_for_sidebar_discovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            create_state_database(codex_home)
+            modern_root = codex_home / "sqlite"
+            modern_root.mkdir()
+            modern = modern_root / "codex-dev.db"
+            with closing(sqlite3.connect(modern)) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE local_thread_catalog_hosts (host_id TEXT PRIMARY KEY, host_kind TEXT NOT NULL);
+                    CREATE TABLE local_thread_catalog_metadata (id INTEGER PRIMARY KEY, catalog_revision INTEGER NOT NULL DEFAULT 0);
+                    INSERT INTO local_thread_catalog_metadata VALUES (1, 4);
+                    CREATE TABLE local_thread_catalog_sync_state (
+                        host_id TEXT PRIMARY KEY, watermark_updated_at REAL,
+                        initial_build_complete INTEGER NOT NULL DEFAULT 0,
+                        observation_sequence INTEGER NOT NULL DEFAULT 0,
+                        last_full_reconciled_at INTEGER
+                    );
+                    INSERT INTO local_thread_catalog_sync_state VALUES ('local', NULL, 1, 27, NULL);
+                    CREATE TABLE local_thread_catalog (
+                        host_id TEXT NOT NULL, thread_id TEXT NOT NULL, display_title TEXT NOT NULL,
+                        source_created_at REAL NOT NULL, source_updated_at REAL NOT NULL,
+                        cwd TEXT NOT NULL, source_kind TEXT NOT NULL, source_detail TEXT,
+                        model_provider TEXT NOT NULL, git_branch TEXT, observation_sequence INTEGER NOT NULL,
+                        missing_candidate INTEGER NOT NULL DEFAULT 0, thread_source TEXT,
+                        PRIMARY KEY (host_id, thread_id)
+                    );
+                    """
+                )
+            session_id = "019f9999-1111-7222-8333-444455556666"
+            session = write_session(codex_home, session_id, "Visible in the sidebar")
+            records = [json.loads(line) for line in session.read_text(encoding="utf-8").splitlines()]
+            records[0]["payload"]["model_provider"] = "custom"
+            session.write_text("".join(json.dumps(item) + "\n" for item in records), encoding="utf-8")
+
+            report = repair_indexes(codex_home, create_backup=False)
+
+            self.assertEqual(report.catalog_inserted, 1)
+            with closing(sqlite3.connect(modern)) as connection:
+                row = connection.execute(
+                    "SELECT display_title, source_detail, missing_candidate, thread_source, model_provider "
+                    "FROM local_thread_catalog WHERE host_id='local' AND thread_id=?",
+                    (session_id,),
+                ).fetchone()
+                revision = connection.execute(
+                    "SELECT catalog_revision FROM local_thread_catalog_metadata WHERE id=1"
+                ).fetchone()[0]
+            self.assertEqual(row[0], "Visible in the sidebar")
+            self.assertEqual(row[1], str(session.resolve()))
+            self.assertEqual(row[2:], (0, "user", "openai"))
+            self.assertEqual(revision, 5)
+
+    def test_relocates_existing_catalog_entry_from_another_computer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / ".codex"
+            create_state_database(codex_home)
+            modern_root = codex_home / "sqlite"
+            modern_root.mkdir()
+            modern = modern_root / "codex-dev.db"
+            session_id = "019f1c7c-c1dc-7193-9979-00c0a2a60067"
+            session = write_session(codex_home, session_id, "Local Tianwen conversation")
+            with closing(sqlite3.connect(modern)) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE local_thread_catalog_hosts (host_id TEXT PRIMARY KEY, host_kind TEXT NOT NULL);
+                    INSERT INTO local_thread_catalog_hosts VALUES ('local', 'local');
+                    CREATE TABLE local_thread_catalog_metadata (id INTEGER PRIMARY KEY, catalog_revision INTEGER NOT NULL DEFAULT 0);
+                    INSERT INTO local_thread_catalog_metadata VALUES (1, 8);
+                    CREATE TABLE local_thread_catalog_sync_state (
+                        host_id TEXT PRIMARY KEY, watermark_updated_at REAL,
+                        initial_build_complete INTEGER NOT NULL DEFAULT 0,
+                        observation_sequence INTEGER NOT NULL DEFAULT 0,
+                        last_full_reconciled_at INTEGER
+                    );
+                    INSERT INTO local_thread_catalog_sync_state VALUES ('local', NULL, 1, 31, NULL);
+                    CREATE TABLE local_thread_catalog (
+                        host_id TEXT NOT NULL, thread_id TEXT NOT NULL, display_title TEXT NOT NULL,
+                        source_created_at REAL NOT NULL, source_updated_at REAL NOT NULL,
+                        cwd TEXT NOT NULL, source_kind TEXT NOT NULL, source_detail TEXT,
+                        model_provider TEXT NOT NULL, git_branch TEXT, observation_sequence INTEGER NOT NULL,
+                        missing_candidate INTEGER NOT NULL DEFAULT 0, thread_source TEXT,
+                        PRIMARY KEY (host_id, thread_id)
+                    );
+                    """
+                )
+                connection.execute(
+                    "INSERT INTO local_thread_catalog VALUES (?, ?, ?, 1, 1, ?, 'app', ?, 'openai', NULL, 1, 0, 'user')",
+                    ("local", session_id, "Old title", r"C:\Users\EDY", rf"\\?\C:\Users\EDY\.codex\sessions\old-{session_id}.jsonl"),
+                )
+                connection.commit()
+
+            report = repair_indexes(codex_home, create_backup=False)
+
+            self.assertEqual(report.catalog_updated, 1)
+            with closing(sqlite3.connect(modern)) as connection:
+                row = connection.execute(
+                    "SELECT display_title, source_detail FROM local_thread_catalog WHERE thread_id=?",
+                    (session_id,),
+                ).fetchone()
+            self.assertEqual(row, ("Local Tianwen conversation", str(session.resolve())))
 
     def test_duplicate_session_ids_choose_richer_active_content_without_unique_error(self):
         with tempfile.TemporaryDirectory() as directory:
