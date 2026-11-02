@@ -12,14 +12,14 @@
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-%3E%3D3.9-3776AB.svg">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-36BFFA.svg">
-  <img alt="Release" src="https://img.shields.io/badge/release-v0.7.2%20Beta%2011-2457E6.svg">
+  <img alt="Release" src="https://img.shields.io/badge/release-v1.0.0-2457E6.svg">
 </p>
 
 <p align="center">
   简体中文 · <a href="./README_EN.md">English</a>
 </p>
 
-Codex Sync Desktop 面向在多台电脑上使用 Codex 的个人用户。它把活动会话转换成去除图片和附件二进制的文字副本，保存到用户控制的 GitHub 私有仓库，并在目标设备上按内容与时间合并差异、修复 SQLite 和侧栏索引，使历史任务重新出现在 Codex 中。
+Codex Sync Desktop 面向在多台电脑上使用 Codex 的个人用户。它把活动会话转换成去除图片和附件二进制的文字副本，保存到用户控制的 GitHub 私有仓库，并在目标设备上仅导入缺少的会话、登记新增侧栏索引。已有会话的正文、标题、项目归属与工作目录保持原样。
 
 > [!IMPORTANT]
 > 本项目源码公开，但用于同步个人会话的 GitHub 仓库必须保持私有。会话文字中的 Token、密钥、密码、连接串、命令、工具输出和推理内容会被保留。请勿向本项目仓库、Issue、讨论区或公开同步仓库提交真实会话数据和凭据。
@@ -49,7 +49,7 @@ Codex 会话主要保存在本机。直接复制整个 `.codex` 目录会混入�
 - **完整文字保留**：保留用户/助手消息、推理、命令、工具调用、工具输出和任务状态；
 - **媒体最小化**：不上传图片、附件二进制、Data URL 和独立认证文件；
 - **跨平台校验**：SHA-256 校验兼容 Git 在 Windows/macOS 间的换行转换；
-- **内容级合并**：同一任务在不同设备继续后，按记录内容和时间合并；
+- **本机会话保护**：仅新增本机没有的会话，同 ID 的本机会话完全跳过；
 - **标题同步**：读取有效人工标题，拒绝把系统指令或环境上下文当成标题；
 - **完整预览**：按动作查看全部会话内容、来源/本机/合并版本，并可修改最终标题；
 - **可撤销导入**：默认保留最近一次完整撤销点，并提供清理入口；
@@ -68,7 +68,7 @@ Codex 会话主要保存在本机。直接复制整个 `.codex` 目录会混入�
 3. 自动安装或修复 Git、GitHub CLI。
 4. 使用系统默认浏览器登录 GitHub；密码和二次验证只在 GitHub 官方页面输入。
 5. 选择“创建新的私有仓库”或“连接已有私有仓库”。
-6. 新设备拉取仓库后，在“同步与导入”选择来源设备。
+6. 新设备拉取仓库后，在“同步与导入”统一预览全部会话；同一会话的不同副本会自动去重合并，无需选择来源设备。
 7. 退出 ChatGPT/Codex/Codex++，点击“一键同步”完成导入和索引修复。
 
 不需要下载 GitHub ZIP、U 盘、网盘或手工复制 `.codex`。
@@ -96,6 +96,8 @@ Codex 会话主要保存在本机。直接复制整个 `.codex` 目录会混入�
   -> 修复 SQLite + session_index.jsonl
   -> Codex 侧栏重新显示任务
 ```
+
+项目文档可另行提取为其他设备直接读取的文字副本，支持 Markdown、Word `.docx`、Excel `.xlsx`，见 [文档最小同步说明](./docs/DOCUMENT_SYNC_ZH.md)。默认不扫描任何项目目录。
 
 详细设计见 [架构说明](./docs/ARCHITECTURE.md) 和 [总体方案](./docs/PRODUCT_SOLUTION_ZH.md)。
 
@@ -157,3 +159,11 @@ python -m unittest discover -s tests -v
 ## License
 
 本项目基于 [MIT License](./LICENSE) 开源。
+
+## v1.0.0 界面更新
+
+采用中性深灰与青色强调的 Sync Studio 布局：概览显示实际环境和最近备份，同步页常驻会话列表与只读对话预览，支持项目与标题筛选、活动时间排序、导入标题暂存。时间范围变更后会清除旧预览并要求重新检查。
+
+右上角“外观”可切换深色／浅色并记住偏好。环境检查采用行列分隔和交替行底色；任务进度置顶显示当前阶段及已用时间，配置向导的仓库选择统一为主题分段控件。
+
+设计规范见 [DESIGN.md](./DESIGN.md)，版本与验证说明见 [v1.0.0](./docs/releases/v1.0.0.md)。

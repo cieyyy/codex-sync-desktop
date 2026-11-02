@@ -46,7 +46,7 @@ def normalize_title(value: str) -> str:
 
 
 def apply_title_overrides(plan: ImportPlan, overrides: Mapping[str, str]) -> int:
-    items_by_task = {item.task_id: item for item in plan.items if item.task_id}
+    items_by_task = {item.task_id: item for item in plan.items if item.task_id and item.action not in ("skipped-existing", "skipped-time")}
     applied = 0
     for task_id, value in overrides.items():
         item = items_by_task.get(task_id)
@@ -63,7 +63,9 @@ def apply_title_overrides(plan: ImportPlan, overrides: Mapping[str, str]) -> int
 
 def preview_sources(item: ImportItem) -> list[PreviewSource]:
     versions: list[PreviewSource] = []
-    if item.source.is_file():
+    if item.incoming_content is not None:
+        versions.append(PreviewSource("仓库会话", content=item.incoming_content))
+    elif item.source.is_file():
         versions.append(PreviewSource("来源设备", path=item.source))
     if item.destination.is_file():
         versions.append(PreviewSource("本机", path=item.destination))
@@ -90,7 +92,8 @@ def render_session_bytes(content: bytes) -> str:
 
 def iter_session_path(path: Path) -> Iterator[str]:
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
+        from .sessions import open_session_text
+        with open_session_text(path) as handle:
             yield from _iter_rendered_lines(handle)
     except OSError as exc:
         yield f"无法读取文件。\n\n原因：{exc}"
@@ -190,3 +193,114 @@ def _display_value(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, indent=2)
     except (TypeError, ValueError):
         return str(value)
+
+
+@dataclass(frozen=True)
+class DialogueMessage:
+    role: str
+    text: str
+    timestamp: str = ""
+
+
+def iter_dialogue(source: PreviewSource) -> Iterator[DialogueMessage]:
+    """Render conversational messages, suppressing event/response mirror copies."""
+    from .sessions import open_session_text
+    if source.path is not None:
+        try:
+            with open_session_text(source.path) as handle:
+                yield from _iter_dialogue_lines(handle)
+        except (OSError, RuntimeError) as exc:
+            yield DialogueMessage("notice", f"无法读取对话：{exc}")
+    elif source.content is not None:
+        yield from _iter_dialogue_lines(source.content.decode("utf-8", errors="replace").splitlines())
+    else:
+        yield DialogueMessage("notice", source.plain_text or "没有可显示的对话。")
+
+
+def _iter_dialogue_lines(lines) -> Iterator[DialogueMessage]:
+    last = None
+    last_origin = ""
+    rendered = False
+    for raw in lines:
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        kind, subtype = record.get("type"), payload.get("type")
+        role, text = "", ""
+        origin = str(kind)
+        if kind == "event_msg" and subtype in ("user_message", "agent_message"):
+            role = "user" if subtype == "user_message" else "assistant"
+            text = str(payload.get("message") or "").strip()
+        elif kind == "response_item" and subtype == "message":
+            role = payload.get("role")
+            if role not in ("user", "assistant") or payload.get("channel") == "analysis":
+                continue
+            text = _content_text(payload.get("content"))
+            images = [block for block in (payload.get("content") or []) if isinstance(block, dict) and block.get("type") in ("input_image", "image")]
+            if images:
+                text += ("\n" if text else "") + "[图片附件]"
+        elif kind == "event_msg" and subtype == "task_complete":
+            role = "assistant"
+            text = str(payload.get("last_agent_message") or "").strip()
+            origin = "fallback"
+        if not role or not text:
+            continue
+        key = (role, text)
+        if key == last and (origin != last_origin or origin == "fallback"):
+            # One user turn may be stored as both event_msg and response_item.
+            continue
+        last, last_origin = key, origin
+        rendered = True
+        yield DialogueMessage(role, text, str(record.get("timestamp") or ""))
+    if not rendered:
+        yield DialogueMessage("notice", "此会话没有可显示的用户或助手消息，可切换“完整记录”查看。")
+
+
+def preview_activity(item: ImportItem) -> float | None:
+    """Use conversation timestamps, never file modification or upload time."""
+    if item.activity_at is not None:
+        return item.activity_at
+    from .sessions import open_session_text
+    from .time_filter import last_activity
+
+    def records(lines):
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                yield row
+    content = item.incoming_content if item.incoming_content is not None else item.merged_content
+    if item.action == "skipped-existing":
+        content = None
+    if content is not None:
+        return last_activity(records(content.decode("utf-8", errors="replace").splitlines()))
+    path = item.destination if item.action == "skipped-existing" else item.source
+    if path.is_file():
+        try:
+            with open_session_text(path) as handle:
+                return last_activity(records(handle))
+        except (OSError, RuntimeError):
+            pass
+    return None
+
+
+def format_activity(value: float | None) -> str:
+    from datetime import datetime, timedelta, timezone
+    if value is None:
+        return "时间未知"
+    return datetime.fromtimestamp(value, timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+
+
+def sorted_activity_ids(identities, activities, *, descending=True):
+    # Unknown timestamps always follow dated conversations in both directions.
+    known = [identity for identity in identities if activities[identity] is not None]
+    unknown = [identity for identity in identities if activities[identity] is None]
+    return sorted(known, key=lambda identity: activities[identity], reverse=descending) + unknown

@@ -1,0 +1,22 @@
+{
+  "pageErrors": [],
+  "horizontalOverflow": [],
+  "verified": [
+    "navigation",
+    "time filtering",
+    "project filtering",
+    "search and empty state",
+    "protected local titles",
+    "dialogue and raw modes",
+    "new title editing",
+    "non-operational import feedback",
+    "light and dark themes"
+  ],
+  "viewports": [
+    1440,
+    1120,
+    920,
+    740,
+    390
+  ]
+}

@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from .models import ImportPlan
 
 
-INDEX_FILES = ("session_index.jsonl", ".codex-global-state.json")
+INDEX_FILES = ("session_index.jsonl", ".codex-global-state.json", "sync-project-membership.json")
 BACKUP_ROOT_NAMES = ("sync-backups", "import-backups", "import-conflicts")
 
 
@@ -89,7 +89,8 @@ def create_import_transaction(codex_home: Path, plan: ImportPlan) -> Path:
         if item.action == "copy":
             copied.append({
                 "path": destination.as_posix(),
-                "after_sha256": _sha256_file(item.source),
+                "after_sha256": (hashlib.sha256(item.merged_content).hexdigest()
+                                 if item.merged_content is not None else _sha256_file(item.source)),
             })
             continue
         if item.merged_content is None or not item.destination.is_file():

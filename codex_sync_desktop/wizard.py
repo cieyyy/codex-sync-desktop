@@ -30,6 +30,7 @@ from .core.git_client import VaultGit
 from .core.git_client import CommandResult
 from .core.sessions import NoActiveSessionsError, list_source_device_options
 from .ui_theme import COLORS, center_window, vertical_scrollbar_required
+from .task_activity import TaskActivity
 
 
 class OnboardingWizard(tk.Toplevel):
@@ -64,6 +65,7 @@ class OnboardingWizard(tk.Toplevel):
         self.codex_home = tk.StringVar(value=app.settings.codex_home)
         self.device_name = tk.StringVar(value=app.settings.device_name)
         self.proxy_url.trace_add("write", lambda *_args: self._invalidate_network())
+        self.china_mode.trace_add("write", lambda *_args: self._invalidate_network())
         for variable in (
             self.confirm_private,
             self.repository_mode,
@@ -116,12 +118,9 @@ class OnboardingWizard(tk.Toplevel):
             page = ttk.Frame(self.page_host, style="Panel.TFrame")
             builder(page)
             self.pages.append(page)
-        activity = ttk.Frame(shell)
-        activity.pack(fill="x", pady=(14, 0))
-        self.activity_progress = ttk.Progressbar(activity, mode="indeterminate", length=180, style="Tech.Horizontal.TProgressbar")
-        self.activity_progress.pack(side="left")
-        self.activity_label = ttk.Label(activity, text="等待操作", style="Muted.TLabel", anchor="w")
-        self.activity_label.pack(side="left", fill="x", expand=True, padx=(12, 0))
+        self.activity = TaskActivity(shell)
+        self.activity.pack(fill='x', before=page_area, pady=(0, 14))
+        self.activity.pack_forget()
         footer = ttk.Frame(shell)
         footer.pack(fill="x", pady=(16, 0))
         self.back_button = ttk.Button(footer, text="上一步", command=self._back)
@@ -132,15 +131,11 @@ class OnboardingWizard(tk.Toplevel):
         self._show_step()
 
     def set_task_state(self, text: str, *, active: bool, failed: bool = False) -> None:
-        if not hasattr(self, "activity_progress"):
+        if not hasattr(self, "activity"):
             return
-        if active:
-            self.activity_progress.start(12)
-            self.activity_label.configure(text=text, style="Activity.TLabel")
-        else:
-            self.activity_progress.stop()
-            self.activity_progress.configure(value=0)
-            self.activity_label.configure(text=text, style="ActivityError.TLabel" if failed else "Muted.TLabel")
+        if not self.activity.winfo_manager():
+            self.activity.pack(fill='x', after=self.progress.master, pady=(0, 14))
+        self.activity.set_state(text, active=active, failed=failed)
 
     def _resize_page_host(self, event: tk.Event[Any]) -> None:
         self.page_canvas.itemconfigure(self.page_window, width=max(int(event.width), 1))
@@ -215,8 +210,8 @@ class OnboardingWizard(tk.Toplevel):
         ).pack(anchor="w", pady=(24, 0))
 
     def _network_page(self, page: ttk.Frame) -> None:
-        self._heading(page, "检查 GitHub 网络连接", "中国大陆网络可能无法直接访问 GitHub。请先启动符合所在地法律和组织规定的代理工具，再填写本机 HTTP 代理地址。")
-        self._checkmark(page, "我位于中国大陆或当前网络需要代理", self.china_mode).pack(anchor="w", pady=(0, 14))
+        self._heading(page, "检查 GitHub 网络连接", "可直接访问 GitHub 时无需代理；只有当前网络需要代理时才勾选下方选项并填写地址。")
+        self._checkmark(page, "当前网络需要使用代理（不勾选则直接连接）", self.china_mode).pack(anchor="w", pady=(0, 14))
         form = ttk.Frame(page, style="Panel.TFrame")
         form.pack(fill="x")
         ttk.Label(form, text="本机代理地址", style="Panel.TLabel", width=16).grid(row=0, column=0, sticky="w")
@@ -258,6 +253,7 @@ class OnboardingWizard(tk.Toplevel):
             text="创建新的私有仓库",
             value="create",
             variable=self.repository_mode,
+            style='Segment.TRadiobutton',
             command=self._toggle_repository_mode,
         ).pack(side="left")
         ttk.Radiobutton(
@@ -265,8 +261,9 @@ class OnboardingWizard(tk.Toplevel):
             text="连接已有私有仓库",
             value="existing",
             variable=self.repository_mode,
+            style='Segment.TRadiobutton',
             command=self._toggle_repository_mode,
-        ).pack(side="left", padx=(18, 0))
+        ).pack(side="left", padx=(2, 0))
         self.repository_choice_host = ttk.Frame(page, style="Panel.TFrame")
         self.repository_choice_host.pack(fill="x", pady=(0, 10))
         self.create_repository_frame = ttk.Frame(self.repository_choice_host, style="Panel.TFrame")
@@ -376,7 +373,7 @@ class OnboardingWizard(tk.Toplevel):
         if self.repositories_loading:
             return
         try:
-            proxy = validate_proxy_url(self.proxy_url.get())
+            proxy = self._effective_proxy()
         except ValueError as exc:
             messagebox.showerror("代理地址错误", str(exc), parent=self)
             return
@@ -437,16 +434,25 @@ class OnboardingWizard(tk.Toplevel):
             self.network_status.configure(text="代理设置已变化，请重新测试")
         self._update_next_state()
 
+    def _effective_proxy(self) -> str:
+        if not self.china_mode.get():
+            return ""
+        proxy = validate_proxy_url(self.proxy_url.get())
+        if not proxy:
+            raise ValueError("已选择使用代理，请填写本机代理地址；如需直连，请取消勾选。")
+        return proxy
+
     def _detect_proxy(self) -> None:
         proxy = detect_system_proxy()
         if proxy:
+            self.china_mode.set(True)
             self.proxy_url.set(proxy)
         else:
             messagebox.showinfo("未检测到代理", "系统没有提供可用的 HTTP/HTTPS 代理。请先启动代理工具，再填写其本机地址。", parent=self)
 
     def _test_network(self) -> None:
         try:
-            proxy = validate_proxy_url(self.proxy_url.get())
+            proxy = self._effective_proxy()
         except ValueError as exc:
             messagebox.showerror("代理地址错误", str(exc), parent=self)
             return
@@ -459,18 +465,26 @@ class OnboardingWizard(tk.Toplevel):
         self.network_ok = result.ok
         if result.ok:
             mode = "通过代理" if result.proxy_used else "直接连接"
-            self.app.settings.proxy_url = validate_proxy_url(self.proxy_url.get())
+            self.app.settings.proxy_url = self._effective_proxy()
             self.app.settings.china_network_mode = self.china_mode.get()
             self.app.store.save(self.app.settings)
-            self.network_status.configure(text=f"连接成功：{mode}，HTTP {result.status}。设置已保存，可继续注册或登录。")
+            if result.api_limited:
+                self.network_status.configure(text=f"网络已连通：{mode}。{result.reason}设置已保存，可继续登录。")
+            else:
+                self.network_status.configure(text=f"连接成功：{mode}，HTTP {result.status}。设置已保存，可继续注册或登录。")
         else:
-            hint = "请确认代理已启动、HTTP 端口正确，并允许本软件访问网络。" if self.proxy_url.get().strip() else "请检查网络；中国大陆或受限网络请先启动合规代理并填写 HTTP 地址。"
-            self.network_status.configure(text=f"连接失败：{result.reason}\n{hint}")
+            if result.api_limited:
+                hint = "可稍后重试；不需要代理时取消勾选后再测试。"
+            elif result.status:
+                hint = "已收到服务端响应，这不等同于本机网络断开。"
+            else:
+                hint = "请确认代理已启动且端口正确。" if self.china_mode.get() else "请检查本机网络连接。"
+            self.network_status.configure(text=f"检测未通过：{result.reason}\n{hint}")
         self._update_next_state()
 
     def _launch_login(self) -> None:
         try:
-            proxy = validate_proxy_url(self.proxy_url.get())
+            proxy = self._effective_proxy()
         except ValueError as exc:
             messagebox.showerror("无法打开登录", str(exc), parent=self)
             return
@@ -515,6 +529,11 @@ class OnboardingWizard(tk.Toplevel):
         messagebox.showerror("无法打开默认浏览器", result.output, parent=self)
 
     def _install_dependencies(self) -> None:
+        try:
+            proxy = self._effective_proxy()
+        except ValueError as exc:
+            messagebox.showerror("代理地址错误", str(exc), parent=self)
+            return
         if not messagebox.askyesno(
             "确认安装",
             "软件将自动下载并安装缺少的 Git 和 GitHub CLI。Windows 的 GitHub CLI 会免安装配置到软件目录；只有安装 Git 或 macOS 系统工具时可能请求系统授权。最多占用约 300 MiB 磁盘。是否继续？",
@@ -524,7 +543,7 @@ class OnboardingWizard(tk.Toplevel):
         self.dependency_status.configure(text="正在自动准备必要工具，请稍候...")
         self.app._run_task(
             "准备必要工具",
-            lambda: {"result": launch_dependency_install(self.app.store.app_home, self.proxy_url.get())},
+            lambda: {"result": launch_dependency_install(self.app.store.app_home, proxy)},
             self._dependency_installer_opened,
             callback_with_result=True,
             error_callback=self._dependency_install_failed,
@@ -557,7 +576,7 @@ class OnboardingWizard(tk.Toplevel):
             return
         self.dependency_poll_attempts += 1
         try:
-            proxy = validate_proxy_url(self.proxy_url.get())
+            proxy = self._effective_proxy()
         except ValueError:
             return
         self.app._run_task(
@@ -580,7 +599,7 @@ class OnboardingWizard(tk.Toplevel):
 
     def _refresh_account(self) -> None:
         try:
-            proxy = validate_proxy_url(self.proxy_url.get())
+            proxy = self._effective_proxy()
         except ValueError as exc:
             messagebox.showerror("代理地址错误", str(exc), parent=self)
             return
@@ -611,7 +630,7 @@ class OnboardingWizard(tk.Toplevel):
 
     def _finish_setup(self) -> None:
         try:
-            proxy = validate_proxy_url(self.proxy_url.get())
+            proxy = self._effective_proxy()
             codex_home = Path(self.codex_home.get()).expanduser().resolve()
             if not codex_home.is_dir():
                 raise FileNotFoundError(f"Codex 数据目录不存在：{codex_home}")

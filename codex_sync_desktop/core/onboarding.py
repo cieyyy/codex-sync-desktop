@@ -37,6 +37,7 @@ class ConnectivityResult:
     status: int = 0
     reason: str = ""
     proxy_used: bool = False
+    api_limited: bool = False
 
 
 @dataclass
@@ -97,7 +98,28 @@ def check_github_connectivity(proxy_url: str = "", timeout: int = 12) -> Connect
         with opener.open(request, timeout=timeout) as response:
             status = int(getattr(response, "status", 200))
         return ConnectivityResult(200 <= status < 400, status, proxy_used=bool(proxy))
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        with exc:
+            body = exc.read(4096).decode("utf-8", errors="replace")
+            limited = status == 429 or (status == 403 and (
+                exc.headers.get("X-RateLimit-Remaining") == "0" or "rate limit" in body.lower()
+                or "rate limit" in str(exc.reason).lower()))
+        if limited:
+            # Confirm web access independently, without consuming the API quota.
+            website = urllib.request.Request("https://github.com", method="HEAD",
+                headers={"User-Agent": "Codex-Sync-Desktop", "Accept": "text/html"})
+            try:
+                with opener.open(website, timeout=timeout) as response:
+                    reachable = 200 <= int(getattr(response, "status", 200)) < 400
+            except (OSError, urllib.error.URLError):
+                reachable = False
+            reason = "GitHub 未登录接口请求额度已用尽，可继续登录以使用账号额度。"
+            if not reachable:
+                reason += "网页连通性检查也未通过，请稍后重试。"
+            return ConnectivityResult(reachable, status, reason, bool(proxy), api_limited=True)
+        return ConnectivityResult(False, status, f"GitHub 返回 HTTP {status}：{exc.reason}；请检查访问权限或网络出口策略。", bool(proxy))
+    except (OSError, urllib.error.URLError) as exc:
         reason = str(getattr(exc, "reason", None) or str(exc))
         if "CERTIFICATE_VERIFY_FAILED" in reason:
             reason = "TLS 证书校验失败：代理返回的证书不受内置可信 CA 认可；请检查代理 HTTPS/证书设置，不要关闭证书校验"

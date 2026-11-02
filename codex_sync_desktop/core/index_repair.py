@@ -12,7 +12,7 @@ from .config_health import resolve_session_model_provider
 from .models import RepairReport, SessionInfo
 from .pathmap import map_path
 from .sessions import iter_session_files
-from .titles import is_usable_title, title_candidate
+from .titles import infer_session_title, is_usable_title, title_candidate
 
 
 def parse_session(path: Path, codex_home: Path, mappings: Mapping[str, str] | None = None) -> SessionInfo | None:
@@ -42,7 +42,7 @@ def parse_session(path: Path, codex_home: Path, mappings: Mapping[str, str] | No
     created_iso = str(metadata.get("timestamp") or last_timestamp)
     created_at = _timestamp_seconds(created_iso, int(path.stat().st_mtime))
     updated_at = _timestamp_seconds(last_timestamp, int(path.stat().st_mtime))
-    title = _clean_title(first_user) or f"Imported conversation {session_id[:8]}"
+    title = infer_session_title(path, session_id)
     cwd = map_path(str(metadata.get("cwd") or str(Path.home())), mappings or {})
     try:
         relative = path.relative_to(codex_home).as_posix()
@@ -275,6 +275,7 @@ def _repair_local_thread_catalog(
     database: Path,
     sessions: Iterable[SessionInfo],
     resolved_names: Mapping[str, str],
+    *, insert_only: bool = False,
 ) -> tuple[int, int]:
     inserted = 0
     updated = 0
@@ -303,6 +304,8 @@ def _repair_local_thread_catalog(
                 "subagent" if "subagent" in (session.source or "").lower() else "user",
                 session.session_id,
             )
+            if exists and insert_only:
+                continue
             if exists:
                 cursor = connection.execute(
                     """
@@ -370,3 +373,48 @@ def _timestamp_seconds(value: str, fallback: int) -> int:
         return int(parsed.timestamp())
     except ValueError:
         return fallback
+
+
+def register_new_sessions(codex_home: Path, paths: Iterable[Path],
+                          preferred_titles: Mapping[str, str] | None = None) -> RepairReport:
+    """Register explicit imports with INSERT only; preserve all existing rows and index bytes."""
+    from .sessions import existing_session_ids
+    report = RepairReport()
+    existing = existing_session_ids(codex_home, include_files=False)
+    sessions = []
+    for path in paths:
+        info = parse_session(path, codex_home)
+        if info is None:
+            raise ValueError(f"无法登记会话：{path}")
+        if info.session_id in existing:
+            raise FileExistsError(f"会话已在本机登记，已停止：{info.session_id}")
+        info.title = (preferred_titles or {}).get(info.session_id, info.title)
+        info.model_provider = resolve_session_model_provider(codex_home, info.model_provider)
+        sessions.append(info)
+    if not sessions:
+        return report
+    databases = [path for path in find_state_databases(codex_home) if _has_threads_table(path)]
+    if not databases:
+        raise FileNotFoundError("未发现 Codex 会话数据库")
+    with closing(sqlite3.connect(str(_select_database(databases)))) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(threads)")}
+        for session in sessions:
+            if not _insert_thread(connection, columns, session):
+                raise FileExistsError(session.session_id)
+            report.inserted += 1
+        connection.commit()
+    index = codex_home / "session_index.jsonl"
+    previous = index.read_bytes() if index.exists() else b""
+    entries = b"".join((json.dumps({
+        "id": session.session_id, "thread_name": session.title,
+        "updated_at": datetime.fromtimestamp(session.updated_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+    }, ensure_ascii=False) + "\n").encode() for session in sessions)
+    with index.open("ab") as handle:
+        if previous and not previous.endswith(b"\n"):
+            handle.write(b"\n")
+        handle.write(entries)
+    catalog = _find_catalog_database(codex_home)
+    if catalog:
+        report.catalog_inserted, _ = _repair_local_thread_catalog(catalog, sessions, {}, insert_only=True)
+    report.scanned = report.index_entries = len(sessions)
+    return report

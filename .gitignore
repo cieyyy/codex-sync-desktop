@@ -10,3 +10,6 @@ dist/
 assets/icon.icns
 assets/icon.ico
 assets/icon.png
+
+.venv-build/
+*.egg-info/

@@ -36,11 +36,18 @@ def device_slug(name: str | None = None) -> str:
 
 @dataclass
 class Settings:
+    appearance: str = "dark"
     codex_home: str = field(default_factory=lambda: str(default_codex_home()))
     vault_path: str = ""
     vault_remote: str = ""
     device_name: str = field(default_factory=socket.gethostname)
     path_mappings: Dict[str, str] = field(default_factory=dict)
+    document_roots: Dict[str, str] = field(default_factory=dict)
+    sync_time_mode: str = "全部时间"
+    sync_start_date: str = ""
+    sync_end_date: str = ""
+    include_archived_sessions: bool = False
+    sync_referenced_documents: bool = False
     auto_pull_before_import: bool = True
     auto_push_after_export: bool = True
     proxy_url: str = ""

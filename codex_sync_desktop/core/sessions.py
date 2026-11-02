@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, Mapping
+from typing import Any, Callable, Dict, Iterable, Iterator, Mapping
 
 from .config import device_slug
 from .models import ExportReport, ImportItem, ImportPlan
+from .projects import read_project_context, session_project, session_cwd, combine_projects, save_imported_projects, normalize_project
 from .redaction import sanitize_record
-from .titles import is_usable_title, read_thread_titles
+from .titles import infer_session_title, is_usable_title, read_thread_titles
 
 
 class NoActiveSessionsError(FileNotFoundError):
@@ -42,6 +45,29 @@ def iter_active_session_files(codex_home: Path) -> Iterator[tuple[str, Path]]:
             yield "sessions", path
 
 
+def open_session_text(path: Path):
+    if path.name.endswith(".jsonl.zst"):
+        try:
+            import zstandard
+        except ImportError as exc:
+            raise RuntimeError("读取压缩归档需要安装项目依赖 zstandard") from exc
+        return io.TextIOWrapper(zstandard.open(path, "rb"), encoding="utf-8", errors="replace")
+    return path.open("r", encoding="utf-8", errors="replace")
+
+
+def iter_export_session_files(codex_home: Path, include_archived: bool = False):
+    yield from iter_active_session_files(codex_home)
+    if include_archived:
+        root = codex_home / "archived_sessions"
+        if root.is_dir():
+            for path in sorted(root.rglob("*")):
+                if path.is_file() and (path.name.endswith(".jsonl") or path.name.endswith(".jsonl.zst")):
+                    # Prefer an uncompressed original if both versions exist.
+                    if path.suffix == ".zst" and path.with_suffix("").exists():
+                        continue
+                    yield "archived_sessions", path
+
+
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(_canonical_text_bytes(path.read_bytes())).hexdigest()
 
@@ -51,8 +77,8 @@ def _canonical_text_bytes(content: bytes) -> bytes:
     return content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
-def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -> ExportReport:
-    if not (codex_home / "sessions").is_dir():
+def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str, include_archived: bool = False) -> ExportReport:
+    if not (codex_home / "sessions").is_dir() and not (include_archived and (codex_home / "archived_sessions").is_dir()):
         raise NoActiveSessionsError(codex_home / "sessions")
     slug = device_slug(device_name)
     device_root = vault / "sessions-text" / "devices" / slug
@@ -64,8 +90,12 @@ def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -
     expected_outputs: set[Path] = set()
     titles = read_thread_titles(codex_home)
 
-    for root_name, source in iter_active_session_files(codex_home):
+    project_context = read_project_context(codex_home)
+
+    for root_name, source in iter_export_session_files(codex_home, include_archived):
         relative_in_root = source.relative_to(codex_home / root_name)
+        if relative_in_root.suffix == ".zst":
+            relative_in_root = relative_in_root.with_suffix("")
         manifest_path = (Path(root_name) / relative_in_root).as_posix()
         destination = output_root / root_name / relative_in_root
         expected_outputs.add(destination.resolve())
@@ -85,22 +115,34 @@ def export_sanitized_sessions(codex_home: Path, vault: Path, device_name: str) -
             "task_id": task_id,
             "sha256": result["sha256"],
             "bytes": result["bytes"],
+            "project": session_project(project_context, task_id, session_cwd(source)),
         }
         if result.get("original_model_provider"):
             entry["original_model_provider"] = result["original_model_provider"]
         if is_usable_title(titles.get(task_id, "")):
             entry["title"] = titles[task_id]
+        else:
+            entry["title"] = infer_session_title(destination, task_id)
         manifest_sessions.append(entry)
 
     report.removed_files = _remove_stale_exports(output_root, expected_outputs)
     report.changed_files += report.removed_files
 
+    project_groups = {}
+    for entry in manifest_sessions:
+        project = entry['project']
+        group = project_groups.setdefault(project['group_id'], dict(project, session_ids=[]))
+        if entry['task_id'] not in group['session_ids']:
+            group['session_ids'].append(entry['task_id'])
     manifest = {
         "format": 4,
+        "project_metadata_format": 1,
+        "projects": sorted(project_groups.values(), key=lambda project: project["group_id"]),
         "device": device_name,
         "device_slug": slug,
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "content": "active textual Codex session records and titles; archived sessions, inline media, and binary attachments omitted; sensitive fields preserved",
+        "include_archived": include_archived,
+        "content": "all textual Codex session records and titles; inline media and binary attachments omitted; sensitive fields preserved" if include_archived else "active textual Codex session records and titles; archived sessions, inline media, and binary attachments omitted; sensitive fields preserved",
         "conflict_policy": "merge by semantic content and timestamp; preserve richer duplicate records",
         "sessions": manifest_sessions,
     }
@@ -183,6 +225,7 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
             "task_id": task_id,
             "source_title": source_title,
             "local_title": local_title,
+            "project": normalize_project(entry.get("project")) if entry.get("project") else combine_projects([], session_cwd(source)),
         }
         if not source.exists():
             plan.items.append(ImportItem("missing-source", relative, source, destination, **item_metadata))
@@ -199,6 +242,9 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
                 **item_metadata,
             ))
             continue
+        if not source_title:
+            source_title = local_title or infer_session_title(source, task_id)
+            item_metadata["source_title"] = source_title
         if task_id and source_title and local_titles.get(task_id) != source_title:
             plan.title_updates[task_id] = source_title
         if not destination.exists():
@@ -231,22 +277,181 @@ def plan_import(codex_home: Path, vault: Path, source_device: str) -> ImportPlan
     return plan
 
 
+def repository_session_summary(vault: Path) -> tuple[int, str]:
+    identities = set()
+    latest = ""
+    for device in list_source_devices(vault):
+        data = json.loads((vault / "sessions-text/devices" / device / "manifest.json").read_text(encoding="utf-8"))
+        latest = max(latest, str(data.get("exported_at") or ""))
+        for entry in data.get("sessions", []):
+            match = re.search(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", Path(entry["path"]).name, re.I)
+            identities.add(match[0] if match else str(entry.get("task_id") or entry["path"]))
+    return len(identities), latest
+
+
+def plan_all_import(codex_home: Path, vault: Path, progress: Callable[[str], None] | None = None,
+                    *, activity_since: float | None = None, activity_before: float | None = None) -> ImportPlan:
+    """Verify all sources, then produce one reversible import item per real session ID."""
+    plan = ImportPlan(source_device="all", source_label="全部会话（仅新增，保护本机）")
+    groups = {}
+    project_records = {}
+    verified_count = 0
+    for device in list_source_devices(vault):
+        device_root = vault / "sessions-text/devices" / device
+        manifest = json.loads((device_root / "manifest.json").read_text(encoding="utf-8"))
+        entries = manifest.get("sessions")
+        if not isinstance(entries, list):
+            raise ValueError(f"Invalid manifest: {device_root}")
+        for entry in entries:
+            verified_count += 1
+            if progress and verified_count % 20 == 0:
+                progress(f"正在校验仓库会话记录：{verified_count} 条")
+            relative = _safe_relative(str(entry.get("path", "")))
+            source, destination = _resolve_manifest_paths(device_root / "sessions", codex_home, relative,
+                                                          int(manifest.get("format", 1)))
+            if not source.is_file():
+                plan.items.append(ImportItem("missing-source", relative, source, destination))
+                continue
+            digest = sha256_file(source)
+            if entry.get("sha256") and digest != entry["sha256"]:
+                plan.items.append(ImportItem("invalid-source-hash", relative, source, destination,
+                                             detail="会话文件校验失败"))
+                continue
+            identity = _session_id_from_file(source)
+            if entry.get("project"):
+                project_records.setdefault(identity, []).append(entry["project"])
+            groups.setdefault(identity, []).append((source, digest, str(entry.get("title") or ""),
+                                                     str(manifest.get("exported_at") or "")))
+
+    local_titles = read_thread_titles(codex_home)
+    reviewed = {}
+    catalog_path = vault / "sessions-text/title-catalog.json"
+    if catalog_path.is_file():
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        reviewed = {item["task_id"]: item["title"] for item in catalog.get("items", [])
+                    if is_usable_title(item.get("title", ""))}
+    local = existing_session_ids(codex_home)
+    from .time_filter import last_activity
+
+    for position, (identity, copies) in enumerate(sorted(groups.items()), 1):
+        if progress:
+            progress(f"正在合并会话：{position}/{len(groups)}")
+        copies.sort(key=lambda copy: (copy[3], str(copy[0])), reverse=True)
+        source = copies[0][0]
+        project = combine_projects(project_records.get(identity, []), session_cwd(source))
+        if identity in local:
+            destination = local[identity] or codex_home / "sessions/synced" / f"rollout-{identity}.jsonl"
+            plan.items.append(ImportItem(
+                "skipped-existing", str(destination), source, destination,
+                detail="已保护本机会话：保留正文、标题、项目归属和工作目录",
+                task_id=identity, local_title=local_titles.get(identity, ""), project=project,
+            ))
+            continue
+        if activity_since is not None or activity_before is not None:
+            activities = [last_activity(_read_records(path)) for path, _, _, _ in copies]
+            latest = max((value for value in activities if value is not None), default=None)
+            if latest is None or (activity_since is not None and latest < activity_since) or (activity_before is not None and latest >= activity_before):
+                safe_id = identity if re.fullmatch(r"[\w-]+", identity) else hashlib.sha256(identity.encode()).hexdigest()
+                destination = codex_home / "sessions/synced" / f"rollout-{safe_id}.jsonl"
+                title = reviewed.get(identity) or next((title for _, _, title, _ in copies if is_usable_title(title)), "")
+                reason = "无有效活动时间，未纳入日期范围" if latest is None else "最后活动：" + datetime.fromtimestamp(latest).astimezone().strftime("%Y-%m-%d %H:%M") + "，不在所选范围内"
+                plan.items.append(ImportItem("skipped-time", str(destination), source, destination,
+                                            detail=reason, task_id=identity, source_title=title, activity_at=latest, project=project))
+                continue
+        incoming = _read_records(source)
+        seen = {copies[0][1]}
+        for path, digest, _, _ in copies[1:]:
+            if digest in seen:
+                continue
+            encoded, _ = _merge_records(incoming, _read_records(path))
+            incoming = [json.loads(line) for line in encoded.splitlines()]
+            seen.add(digest)
+        incoming_bytes = b"".join((json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+                                  for record in incoming)
+        safe_id = identity if re.fullmatch(r"[\w-]+", identity) else hashlib.sha256(identity.encode()).hexdigest()
+        destination = codex_home / "sessions/synced" / f"rollout-{safe_id}.jsonl"
+        if destination.exists():
+            raise FileExistsError(f"导入目标已存在，已停止以保护本机文件：{destination}")
+        action = "copy"
+        title = reviewed.get(identity) or next((title for _, _, title, _ in copies if is_usable_title(title)), "")
+        title = title or local_titles.get(identity) or infer_session_title(source, identity)
+        if title != local_titles.get(identity):
+            plan.title_updates[identity] = title
+        plan.items.append(ImportItem(
+            action, destination.relative_to(codex_home).as_posix(), source, destination,
+            merged_content=incoming_bytes,
+            detail=f"已合并 {len(copies)} 份仓库记录" if len(copies) > 1 else "仓库会话",
+            task_id=identity, source_title=title, local_title=local_titles.get(identity, ""),
+            incoming_content=incoming_bytes, activity_at=last_activity(incoming), project=project,
+        ))
+    return plan
+
+
+def existing_session_ids(codex_home: Path, include_files: bool = True) -> dict[str, Path | None]:
+    """Read every local identity store; fail closed on unreadable databases/indexes."""
+    import sqlite3
+    from contextlib import closing
+    from .backups import find_state_databases
+
+    result = {}
+    if include_files:
+        for folder in ("sessions", "archived_sessions"):
+            for path in (codex_home / folder).rglob("*"):
+                if not path.is_file() or not path.name.endswith((".jsonl", ".jsonl.zst")):
+                    continue
+                # Verify readability rather than treating a read failure as absence.
+                with open_session_text(path) as handle:
+                    handle.read(1)
+                result[_session_id_from_file(path)] = path
+                match = re.search(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", path.name)
+                if match:
+                    result.setdefault(match.group(), path)
+    index = codex_home / "session_index.jsonl"
+    if index.exists():
+        for line in index.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("id"):
+                result.setdefault(str(row["id"]), None)
+    for database in find_state_databases(codex_home):
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            for table, column in (("threads", "id"), ("local_thread_catalog", "thread_id")):
+                if table in tables:
+                    for row in connection.execute(f"SELECT {column} FROM {table}"):
+                        result.setdefault(str(row[0]), None)
+    return result
+
+
 def apply_import(plan: ImportPlan) -> Dict[str, Any]:
     invalid = [item for item in plan.items if item.action in ("missing-source", "invalid-source-hash")]
     if invalid:
         raise ValueError(f"Import source verification failed for {len(invalid)} file(s)")
+    if plan.source_device == "all":
+        copies = [item for item in plan.items if item.action == "copy"]
+        if copies:
+            home = copies[0].destination.parents[2]
+            existing = existing_session_ids(home)
+            if any(item.task_id in existing or item.destination.exists() for item in copies):
+                raise FileExistsError("本机会话已变化，请重新预览；为保护已有会话，本次导入已停止")
     copied = []
     conflicts = []
     merged = []
     for item in plan.items:
         if item.action == "copy":
-            _copy_atomic(item.source, item.destination)
+            if item.merged_content is not None:
+                _write_atomic(item.destination, item.merged_content)
+            else:
+                _copy_atomic(item.source, item.destination)
             copied.append(item.destination)
         elif item.action == "conflict":
             if item.merged_content is None:
                 raise ValueError(f"Missing merge data for {item.relative_path}")
             _write_atomic(item.destination, item.merged_content)
             merged.append(item.destination)
+    if plan.source_device == "all" and copied:
+        save_imported_projects(home, [item for item in copies if item.destination in copied])
     return {"copied": copied, "conflicts": conflicts, "merged": merged, "counts": plan.counts}
 
 
@@ -300,7 +505,7 @@ def _sanitized_bytes(source: Path) -> tuple[bytes, Dict[str, Any]]:
     lines = []
     kept = omitted = invalid = media = secrets = 0
     original_model_provider = ""
-    with source.open("r", encoding="utf-8", errors="replace") as handle:
+    with open_session_text(source) as handle:
         for raw_line in handle:
             if not raw_line.strip():
                 continue
@@ -332,6 +537,10 @@ def _sanitized_bytes(source: Path) -> tuple[bytes, Dict[str, Any]]:
 def _merge_session_bytes(destination: Path, source: Path) -> tuple[bytes, Dict[str, int]]:
     destination_records = _read_records(destination)
     source_records = _read_records(source)
+    return _merge_records(destination_records, source_records)
+
+
+def _merge_records(destination_records, source_records) -> tuple[bytes, Dict[str, int]]:
     merged = [{"item": item, "sequence": index} for index, item in enumerate(destination_records)]
     matches: Dict[str, list[int]] = {}
     for index, record in enumerate(merged):
@@ -480,7 +689,7 @@ def _task_id_from_filename(name: str) -> str:
 
 def _session_id_from_file(path: Path) -> str:
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
+        with open_session_text(path) as handle:
             for raw_line in handle:
                 try:
                     item = json.loads(raw_line)

@@ -26,16 +26,20 @@ from .core.backups import (
     rollback_import_transaction,
 )
 from .core.config import SettingsStore, device_slug
+from .core.time_filter import TIME_FILTER_OPTIONS, resolve_time_range
+from .core.conversation_documents import export_conversation_documents
+from .core.documents import export_documents
 from .core.config_health import repair_model_provider_to_openai
 from .core.diagnostics import collect_diagnostics, diagnostics_json, remediation_text, session_index_summary
 from .core.git_client import VaultGit, compact_failure_reason, summarize_pull
 from .core.import_preview import apply_title_overrides, items_for_category
-from .core.index_repair import repair_indexes
+from .core.index_repair import repair_indexes, register_new_sessions
 from .core.onboarding import validate_proxy_url
 from .core.processes import running_codex_processes
-from .core.sessions import apply_import, export_sanitized_sessions, list_source_device_options, plan_import
+from .core.sessions import apply_import, export_sanitized_sessions, plan_all_import, repository_session_summary
 from .import_preview_dialog import ImportPreviewDialog
-from .ui_theme import COLORS, center_window
+from .studio_ui import StudioUI, apply_studio_styles
+from .ui_theme import COLORS, center_window, set_palette, recolor_widgets
 from .window_chrome import WindowChrome, configure_windows_app_identity
 from .wizard import OnboardingWizard
 
@@ -86,15 +90,15 @@ def create_checkbox_indicator_image(
     return image
 
 
-class CodexSyncApp(tk.Tk):
+class CodexSyncApp(StudioUI, tk.Tk):
     def __init__(self, store: SettingsStore | None = None):
         super().__init__()
         self.store = store or SettingsStore()
         self.settings = self.store.load()
+        set_palette(self.settings.appearance)
         self.messages: queue.Queue = queue.Queue()
         self.active_plan = None
         self.title_overrides: dict[str, dict[str, str]] = {}
-        self.source_device_keys: dict[str, str] = {}
         self.last_diagnostics: dict[str, Any] | None = None
         self.task_buttons: list[ttk.Button] = []
         self.pages: dict[str, ttk.Frame] = {}
@@ -103,7 +107,7 @@ class CodexSyncApp(tk.Tk):
         self._dependency_prompted = False
         self._config_prompted = False
         self.title(f"Codex Sync Desktop {__version__}")
-        self.geometry("1120x760")
+        self.geometry("1280x840")
         self.minsize(920, 640)
         self.configure(background=COLORS["background"])
         self.chrome = WindowChrome(self, f"Codex Sync Desktop  {__version__}", self.destroy)
@@ -141,8 +145,8 @@ class CodexSyncApp(tk.Tk):
         if "clam" in style.theme_names():
             style.theme_use("clam")
         body_font = ("Segoe UI", 10) if os.name == "nt" else ("Helvetica Neue", 12)
-        heading_font = ("Cascadia Code SemiBold", 19) if os.name == "nt" else ("SF Mono", 20, "bold")
-        section_font = ("Cascadia Code SemiBold", 11) if os.name == "nt" else ("SF Mono", 13, "bold")
+        heading_font = ("Cascadia Code SemiBold", 19) if os.name == "nt" else ("Helvetica Neue", 23, "bold")
+        section_font = ("Cascadia Code SemiBold", 11) if os.name == "nt" else ("Helvetica Neue", 13, "bold")
         self.option_add("*Font", body_font)
         style.configure("TFrame", background=COLORS["background"])
         style.configure("Panel.TFrame", background=COLORS["surface"])
@@ -185,13 +189,19 @@ class CodexSyncApp(tk.Tk):
         checked = create_checkbox_indicator_image(self, selected=True)
         disabled_unchecked = create_checkbox_indicator_image(self, selected=False, disabled=True)
         disabled_checked = create_checkbox_indicator_image(self, selected=True, disabled=True)
-        self._checkbox_indicator_images = (
+        images = (
             unchecked,
             checked,
             disabled_unchecked,
             disabled_checked,
         )
-        style.element_create(
+        if hasattr(self, '_checkbox_indicator_images'):
+            for target, source in zip(self._checkbox_indicator_images, images):
+                self.tk.call(str(target), 'copy', str(source))
+        else:
+            self._checkbox_indicator_images = images
+        if 'Checkmark.indicator' not in style.element_names():
+            style.element_create(
             "Checkmark.indicator",
             "image",
             unchecked,
@@ -200,7 +210,7 @@ class CodexSyncApp(tk.Tk):
             ("selected", checked),
             border=0,
             sticky="",
-        )
+            )
         style.layout(
             "Checkmark.TCheckbutton",
             [
@@ -260,66 +270,16 @@ class CodexSyncApp(tk.Tk):
         )
         style.configure("Tech.Horizontal.TProgressbar", troughcolor=COLORS["surface_alt"], background=COLORS["primary"], lightcolor=COLORS["primary"], darkcolor=COLORS["primary"], bordercolor=COLORS["border"], thickness=8)
 
-    def _build_ui(self) -> None:
-        header = ttk.Frame(self.chrome.body, padding=(24, 16, 24, 12))
-        header.pack(fill="x")
-        ttk.Label(header, text="Codex Sync Desktop", style="Title.TLabel").pack(side="left")
-        status = ttk.Frame(header)
-        status.pack(side="right")
-        self.task_progress = ttk.Progressbar(status, mode="indeterminate", length=140, style="Tech.Horizontal.TProgressbar")
-        self.task_progress.pack(side="left", padx=(0, 10))
-        status_text = ttk.Frame(status)
-        status_text.pack(side="left")
-        self.busy_text = tk.StringVar(value="就绪")
-        self.busy_label = ttk.Entry(
-            status_text,
-            textvariable=self.busy_text,
-            state="readonly",
-            style="Status.TEntry",
-            width=34,
-            justify="left",
-            takefocus=False,
-        )
-        self.busy_label.pack(fill="x")
-        self.busy_scroll = ttk.Scrollbar(
-            status_text,
-            orient="horizontal",
-            command=self.busy_label.xview,
-            style="Status.Horizontal.TScrollbar",
-        )
-        self.busy_scroll.pack(fill="x", pady=(2, 0))
-        self.busy_label.configure(xscrollcommand=self.busy_scroll.set)
-        shell = ttk.Frame(self.chrome.body, padding=(20, 0, 20, 20))
-        shell.pack(fill="both", expand=True)
-        sidebar = ttk.Frame(shell, style="Sidebar.TFrame", padding=(0, 18))
-        sidebar.pack(side="left", fill="y")
-        sidebar.configure(width=190)
-        sidebar.pack_propagate(False)
-        ttk.Label(sidebar, text="同步控制台", style="SidebarTitle.TLabel", padding=(18, 0, 12, 14)).pack(fill="x")
-        for key, title in (
-            ("overview", "概览"),
-            ("sync", "同步与导入"),
-            ("backups", "备份与清理"),
-            ("maintenance", "日志与设置"),
-        ):
-            button = ttk.Button(sidebar, text=title, style="Nav.TButton", command=lambda value=key: self.show_page(value))
-            button.pack(fill="x", padx=8, pady=3)
-            button.bind("<ButtonRelease-1>", self._release_nav_mouse_focus, add="+")
-            self.nav_buttons[key] = button
-        ttk.Label(sidebar, text=f"版本 {__version__}", style="SidebarMuted.TLabel", padding=(18, 16)).pack(side="bottom", fill="x")
-        self.content = ttk.Frame(shell, padding=(18, 0, 0, 0))
-        self.content.pack(side="left", fill="both", expand=True)
-        for key in ("overview", "sync", "backups", "maintenance"):
-            self.pages[key] = ttk.Frame(self.content)
-        self.overview_tab = self.pages["overview"]
-        self.sync_tab = self.pages["sync"]
-        self.backups_tab = self.pages["backups"]
-        self.maintenance_tab = self.pages["maintenance"]
-        self._build_overview()
-        self._build_sync()
-        self._build_backups()
-        self._build_maintenance()
-        self.show_page("overview")
+        apply_studio_styles(self)
+
+    def change_appearance(self) -> None:
+        appearance = 'light' if self.appearance_var.get() == '浅色' else 'dark'
+        previous = dict(COLORS)
+        set_palette(appearance)
+        self._configure_styles()
+        recolor_widgets(self, previous)
+        self.settings.appearance = appearance
+        self.store.save(self.settings)
 
     def _release_nav_mouse_focus(self, _event: tk.Event) -> None:
         """Mouse selection uses the active-page fill without a dotted focus ring."""
@@ -330,6 +290,8 @@ class CodexSyncApp(tk.Tk):
             page.pack_forget()
             self.nav_buttons[key].configure(style="NavActive.TButton" if key == name else "Nav.TButton")
         self.pages[name].pack(fill="both", expand=True)
+        if hasattr(self, "page_label"):
+            self.page_label.configure(text="工作区 / " + {"overview":"概览", "sync":"同步与导入", "backups":"备份与撤销", "maintenance":"设置与诊断"}[name])
         if name == "backups":
             self.refresh_backups()
         elif name == "sync":
@@ -338,51 +300,53 @@ class CodexSyncApp(tk.Tk):
     @staticmethod
     def _page_header(parent: ttk.Frame, title: str, subtitle: str) -> None:
         ttk.Label(parent, text=title, style="Title.TLabel").pack(anchor="w")
-        ttk.Label(parent, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(2, 14))
+        ttk.Label(parent, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(2, 8))
 
     def _task_button(self, parent: ttk.Frame, text: str, command: Callable[[], None], style: str = "TButton") -> ttk.Button:
         button = ttk.Button(parent, text=text, command=command, style=style)
         self.task_buttons.append(button)
         return button
 
-    def _build_overview(self) -> None:
-        self._page_header(self.overview_tab, "运行概览", "检查本机 Codex、同步仓库和必要工具状态")
-        toolbar = ttk.Frame(self.overview_tab)
-        toolbar.pack(fill="x", pady=(0, 10))
-        self._task_button(toolbar, "刷新检查", self.refresh_all, "Accent.TButton").pack(side="left")
-        ttk.Button(toolbar, text="打开 Codex 目录", command=lambda: self._open_path(self.settings.codex_path)).pack(side="left", padx=6)
-        ttk.Button(toolbar, text="首次配置向导", command=self.open_onboarding).pack(side="left", padx=6)
-        self.overview_tree = self._tree(self.overview_tab, ("item", "status", "detail"), (180, 120, 590))
+    def _time_filter_changed(self) -> None:
+        custom = self.sync_time_var.get() == "自定义日期"
+        if hasattr(self, "date_fields"):
+            if custom:
+                self.date_fields.pack(side="left", padx=8)
+            else:
+                self.date_fields.pack_forget()
+        self.sync_start_entry.configure(state="normal" if custom else "disabled")
+        self.sync_end_entry.configure(state="normal" if custom else "disabled")
+        if getattr(self, "preview_pane", None) is not None:
+            self.preview_pane._commit_title(show_feedback=False)
+            self.preview_pane.destroy()
+            self.preview_pane = None
+            ttk.Label(self.workspace, text="筛选已更新，请重新检查可导入会话。", style="Muted.TLabel").pack(anchor="center", pady=40)
+        self.active_plan = None
+        if hasattr(self, "import_summary"):
+            self.import_summary.configure(text="筛选已更新，请重新检查可导入会话。")
+            self.import_button.configure(text="导入会话")
+            self.ready_title.configure(text="查看有哪些会话，可以继续处理。")
+            for key, button in self.category_buttons.items():
+                button.configure(text={"copy":"可导入", "skipped-existing":"本机已保护", "skipped-time":"按时间跳过", "failure":"校验失败"}[key] + "  —", style="Quiet.TButton")
+        if hasattr(self, "import_tree"):
+            self.import_tree.delete(*self.import_tree.get_children())
 
-    def _build_sync(self) -> None:
-        self._page_header(self.sync_tab, "同步与导入", "来源设备在这里选择；内容差异会在后台自动合并")
-        source_panel = ttk.Frame(self.sync_tab, style="Panel.TFrame", padding=14)
-        source_panel.pack(fill="x", pady=(0, 12))
-        ttk.Label(source_panel, text="来源设备", style="PanelSection.TLabel").grid(row=0, column=0, sticky="w")
-        self.source_device = tk.StringVar()
-        self.device_combo = ttk.Combobox(source_panel, textvariable=self.source_device, state="readonly", width=30)
-        self.device_combo.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        self.device_combo.bind("<<ComboboxSelected>>", lambda _event: self._update_source_summary())
-        self.source_count_label = ttk.Label(source_panel, text="会话数量：—", style="Panel.TLabel")
-        self.source_count_label.grid(row=0, column=1, rowspan=2, sticky="w", padx=(24, 10))
-        self.source_time_label = ttk.Label(source_panel, text="最后上传：—", style="PanelMuted.TLabel")
-        self.source_time_label.grid(row=0, column=2, rowspan=2, sticky="w", padx=(10, 0))
-        source_panel.columnconfigure(0, weight=1)
-        actions = ttk.Frame(self.sync_tab)
-        actions.pack(fill="x", pady=(0, 12))
-        self._task_button(actions, "一键同步", self.sync_once, "Accent.TButton").pack(side="left")
-        self._task_button(actions, "拉取仓库", self.pull_vault).pack(side="left", padx=6)
-        self._task_button(actions, "导出并推送", self.export_and_push).pack(side="left", padx=6)
-        self._task_button(actions, "预览导入", self.preview_import).pack(side="left", padx=(12, 6))
-        self._task_button(actions, "导入并修复", self.import_and_repair).pack(side="left")
-        ttk.Label(
-            self.sync_tab,
-            text="拉取、导出和预览无需退出 ChatGPT/Codex；导入修复、包含导入的一键同步和撤销前需要退出。",
-            style="Muted.TLabel",
-        ).pack(anchor="w", pady=(0, 8))
-        self.import_tree = self._tree(self.sync_tab, ("action", "count", "meaning"), (180, 100, 610))
-        self.import_tree.bind("<ButtonRelease-1>", self._open_import_action_from_event, add="+")
-        self.import_tree.bind("<Return>", lambda _event: self._open_selected_import_action(), add="+")
+    def _capture_sync_time_filter(self):
+        pane = getattr(self, "preview_pane", None)
+        if pane is not None and not pane._commit_title(show_feedback=True):
+            return None
+        mode = self.sync_time_var.get() if hasattr(self, "sync_time_var") else getattr(self.settings, "sync_time_mode", "全部时间")
+        start = self.sync_start_var.get().strip() if hasattr(self, "sync_start_var") else getattr(self.settings, "sync_start_date", "")
+        end = self.sync_end_var.get().strip() if hasattr(self, "sync_end_var") else getattr(self.settings, "sync_end_date", "")
+        try:
+            since, before = resolve_time_range(mode, start, end)
+        except ValueError as exc:
+            messagebox.showerror("时间范围错误", str(exc))
+            return None
+        if hasattr(self, "store"):
+            self.settings.sync_time_mode, self.settings.sync_start_date, self.settings.sync_end_date = mode, start, end
+            self.store.save(self.settings)
+        return {"activity_since": since, "activity_before": before}
 
     def _build_backups(self) -> None:
         self._page_header(self.backups_tab, "备份与清理", "仅保留最近一次导入保护；撤销前会校验会话是否被继续修改")
@@ -419,6 +383,8 @@ class CodexSyncApp(tk.Tk):
         buttons = ttk.Frame(panel, style="Panel.TFrame")
         buttons.grid(row=len(labels) + 1, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self._task_button(buttons, "保存设置", self.save_settings, "Accent.TButton").pack(side="left")
+        ttk.Button(buttons, text="首次配置向导", command=self.open_onboarding).pack(side="left", padx=8)
+        self._task_button(buttons, "拉取仓库", self.pull_vault).pack(side="left")
         logs_header = ttk.Frame(self.maintenance_tab)
         logs_header.pack(fill="x", pady=(0, 8))
         ttk.Label(logs_header, text="运行日志", style="Section.TLabel").pack(side="left")
@@ -453,6 +419,8 @@ class CodexSyncApp(tk.Tk):
 
     def _show_overview(self, diagnostics: dict[str, Any]) -> None:
         self.last_diagnostics = diagnostics
+        if hasattr(self, "ready_panel"):
+            self._update_studio_overview(diagnostics)
         self.overview_tree.delete(*self.overview_tree.get_children())
         lfs_required = diagnostics.get("git_lfs_required", False)
         lfs_status = "正常" if diagnostics["git_lfs"] else ("缺失（必需）" if lfs_required else "未安装（可选）")
@@ -497,7 +465,7 @@ class CodexSyncApp(tk.Tk):
         ):
             self._dependency_prompted = True
             self.after_idle(lambda: self.open_onboarding(initial_step=2))
-        for label, refresh in (("来源设备", self.refresh_sources), ("备份", self.refresh_backups)):
+        for label, refresh in (("会话清单", self.refresh_sources), ("备份", self.refresh_backups)):
             try:
                 refresh()
             except Exception:
@@ -568,39 +536,22 @@ class CodexSyncApp(tk.Tk):
         self._set_status_text("已复制")
 
     def refresh_sources(self) -> None:
-        vault = self.settings.vault
-        options = list_source_device_options(vault) if vault else []
-        previous_key = CodexSyncApp._selected_source_device(self)
-        self.source_device_keys = dict(options)
-        labels = [label for label, _key in options]
-        self.device_combo["values"] = labels
-        selected = next((label for label, key in options if key == previous_key), "")
-        if not selected and options:
-            local_device = device_slug(self.settings.device_name)
-            selected = next((label for label, key in options if key != local_device), options[0][0])
-        self.source_device.set(selected)
-        if not options:
-            self.source_device.set("")
         self._update_source_summary()
-
-    def _selected_source_device(self) -> str:
-        selected = self.source_device.get().strip()
-        return getattr(self, "source_device_keys", {}).get(selected, selected)
 
     def _update_source_summary(self) -> None:
         vault = self.settings.vault
-        source = CodexSyncApp._selected_source_device(self)
-        if not vault or not source:
+        if not vault:
             self.source_count_label.configure(text="会话数量：—")
             self.source_time_label.configure(text="最后上传：—")
+            if hasattr(self, "remote_count_label"):
+                self.remote_count_label.configure(text="同步仓库  ·  尚未配置")
             return
-        manifest_path = vault / "sessions-text" / "devices" / source / "manifest.json"
         try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            count = len(data.get("sessions") or [])
-            exported = str(data.get("exported_at") or "未知")
-            self.source_count_label.configure(text=f"会话数量：{count}")
-            self.source_time_label.configure(text=f"最后上传：{exported[:19].replace('T', ' ')}")
+            count, exported = repository_session_summary(vault)
+            self.source_count_label.configure(text=f"仓库会话：{count}（已去重）")
+            if hasattr(self, "remote_count_label"):
+                self.remote_count_label.configure(text=f"同步仓库  ·  {count} 个会话")
+            self.source_time_label.configure(text=f"最后上传：{exported[:19].replace('T', ' ') or '未知'}")
         except (OSError, ValueError, TypeError):
             self.source_count_label.configure(text="会话数量：读取失败")
             self.source_time_label.configure(text="最后上传：清单无效")
@@ -675,38 +626,55 @@ class CodexSyncApp(tk.Tk):
 
     def _export_and_push_work(self, vault: Path, force_push: bool = False) -> str:
         self._report_progress("正在整理并导出本机活动会话")
-        report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
+        report = (export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name, include_archived=True)
+                  if getattr(self.settings, "include_archived_sessions", False) else
+                  export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name))
         self.logger.info(
             "已导出 %s 个活动文字会话，移除 %s 个不再同步的旧副本和 %s 个媒体或二进制块",
             report.sessions,
             report.removed_files,
             report.media_removed,
         )
+        document_summary = CodexSyncApp._export_project_documents(self, vault)
         if force_push or self.settings.auto_push_after_export:
             self._report_progress("正在提交并推送到 GitHub")
             result = VaultGit(vault, proxy_url=self.settings.proxy_url).commit_and_push(
                 f"sync: update {device_slug(self.settings.device_name)}"
             )
             self._checked_git(result)
-        return f"结果：成功\n活动会话：{report.sessions}\n停止同步：{report.removed_files}\n失败：0"
+        return f"结果：完成\n活动会话：{report.sessions}\n停止同步：{report.removed_files}\n{document_summary}"
+
+    def _export_project_documents(self, vault: Path) -> str:
+        roots = getattr(self.settings, "document_roots", {})
+        referenced = getattr(self.settings, "sync_referenced_documents", False)
+        if not roots and not referenced:
+            return "文档同步：未配置"
+        self._report_progress("正在提取项目文档文字")
+        if referenced:
+            index = export_conversation_documents(
+                self.settings.codex_path, vault, self.settings.device_name,
+                include_archived=getattr(self.settings, "include_archived_sessions", False))
+        else:
+            index = export_documents(vault, self.settings.device_name, roots)
+        failures = [item for item in index["files"] if item["status"] != "ok"]
+        for item in failures:
+            self.logger.warning("文档提取失败：%s/%s：%s", item["project"], item["source"], item["error"])
+        return f"文档成功：{len(index['files']) - len(failures)}；文档失败：{len(failures)}"
 
     def sync_once(self) -> None:
         vault = self._require_vault()
         if not vault:
             return
-        source = CodexSyncApp._selected_source_device(self)
-        source_label = self.source_device.get().strip() or source
+        time_window = CodexSyncApp._capture_sync_time_filter(self)
+        if time_window is None:
+            return
         local_device = device_slug(self.settings.device_name)
-        should_import = bool(source and source != local_device)
-        if should_import:
-            processes = running_codex_processes(os.getpid())
-            if processes:
-                names = ", ".join(f"{item.name} (PID {item.pid})" for item in processes)
-                messagebox.showerror("需要退出相关程序", f"一键同步包含导入和索引修复，请先退出 Codex、ChatGPT 和 Codex++。\n\n检测到：{names}")
-                return
-        description = "拉取仓库并上传本机活动会话"
-        if should_import:
-            description = f"拉取仓库、导入来源设备 {source_label}、修复侧栏，再上传本机活动会话"
+        processes = running_codex_processes(os.getpid())
+        if processes:
+            names = ", ".join(f"{item.name} (PID {item.pid})" for item in processes)
+            messagebox.showerror("需要退出相关程序", f"一键同步包含导入和索引修复，请先退出 Codex、ChatGPT 和 Codex++。\n\n检测到：{names}")
+            return
+        description = "拉取仓库、仅导入本机缺少的会话、保留已有会话，再上传本机会话"
         if not messagebox.askyesno("确认一键同步", description + "。是否继续？"):
             return
 
@@ -715,96 +683,94 @@ class CodexSyncApp(tk.Tk):
             self._report_progress("正在从 GitHub 拉取最新内容")
             self._checked_git(git.pull())
             copied = merged = titles = 0
-            if should_import:
-                self._report_progress(f"正在分析来源设备 {source_label} 的会话")
-                plan = plan_import(self.settings.codex_path, vault, source)
-                CodexSyncApp._apply_preview_title_overrides(self, plan)
-                has_changes = any(item.action in ("copy", "conflict") for item in plan.items) or bool(plan.title_updates)
-                if has_changes:
-                    transaction = create_import_transaction(self.settings.codex_path, plan)
-                    try:
-                        self._report_progress("正在合并会话内容")
-                        result = apply_import(plan)
-                        self._report_progress("正在修复标题和侧栏索引")
-                        repair_indexes(self.settings.codex_path, {}, create_backup=False, preferred_titles=plan.title_updates)
-                        finish_import_transaction(transaction, result["counts"])
-                        prune_backup_history(self.settings.codex_path, keep=1)
-                    except Exception:
-                        finish_import_transaction(transaction, plan.counts, status="failed")
-                        raise
-                    copied = len(result["copied"])
-                    merged = len(result["merged"])
-                    titles = len(plan.title_updates)
-                else:
-                    # A previous interrupted import may have copied files before its index repair failed.
-                    self._report_progress("正在校验并修复侧栏索引")
-                    repair_indexes(
-                        self.settings.codex_path,
-                        {},
-                        create_backup=True,
-                        preferred_titles=plan.title_updates,
-                    )
+            self._report_progress("正在分析并合并仓库中的全部会话")
+            plan = plan_all_import(self.settings.codex_path, vault, progress=self._report_progress, **time_window)
+            CodexSyncApp._apply_preview_title_overrides(self, plan)
+            has_changes = any(item.action in ("copy", "conflict") for item in plan.items) or bool(plan.title_updates)
+            if has_changes:
+                transaction = create_import_transaction(self.settings.codex_path, plan)
+                try:
+                    self._report_progress("正在合并会话内容")
+                    result = apply_import(plan)
+                    self._report_progress("正在登记新增会话的侧栏索引")
+                    register_new_sessions(self.settings.codex_path, result["copied"], preferred_titles=plan.title_updates)
+                    finish_import_transaction(transaction, result["counts"])
                     prune_backup_history(self.settings.codex_path, keep=1)
+                except Exception:
+                    finish_import_transaction(transaction, plan.counts, status="failed")
+                    raise
+                copied = len(result["copied"])
+                merged = len(result["merged"])
+                titles = len(plan.title_updates)
+            else:
+                apply_import(plan)  # Verify failures even when every valid item is protected.
             self._report_progress("正在导出本机活动会话")
-            report = export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name)
+            report = (export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name, include_archived=True)
+                  if getattr(self.settings, "include_archived_sessions", False) else
+                  export_sanitized_sessions(self.settings.codex_path, vault, self.settings.device_name))
+            document_summary = CodexSyncApp._export_project_documents(self, vault)
             self._report_progress("正在提交并推送到 GitHub")
             self._checked_git(git.commit_and_push(f"sync: one-click update {local_device}"))
             return (
                 "结果：成功\n"
                 f"导入新增：{copied}\n"
-                f"自动合并：{merged}\n"
+                f"已保护本机会话：{plan.counts.get('skipped-existing', 0)}\n"
+                f"按时间跳过：{plan.counts.get('skipped-time', 0)}\n"
                 f"标题更新：{titles}\n"
                 f"上传活动会话：{report.sessions}\n"
                 f"停止同步：{report.removed_files}\n"
-                "失败：0"
+                f"{document_summary}"
             )
 
         self._run_task("一键同步", work, self.refresh_all)
 
     def preview_import(self) -> None:
         vault = self._require_vault()
-        source = CodexSyncApp._selected_source_device(self)
-        source_label = self.source_device.get().strip() or source
-        if not vault or not source:
-            messagebox.showwarning("缺少来源", "请选择来源设备。")
+        if not vault:
+            return
+        time_window = CodexSyncApp._capture_sync_time_filter(self)
+        if time_window is None:
             return
         def work() -> Any:
             if self.settings.auto_pull_before_import:
                 self._report_progress("正在拉取仓库最新内容")
                 self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
-            self._report_progress(f"正在分析来源设备 {source_label} 的会话")
-            plan = plan_import(self.settings.codex_path, vault, source)
+            self._report_progress("正在分析并合并仓库中的全部会话")
+            plan = plan_all_import(self.settings.codex_path, vault, progress=self._report_progress, **time_window)
             CodexSyncApp._apply_preview_title_overrides(self, plan)
             return plan
         self._run_task("预览导入", work, self._show_import_plan, callback_with_result=True)
 
     def import_and_repair(self) -> None:
         vault = self._require_vault()
-        source = CodexSyncApp._selected_source_device(self)
-        source_label = self.source_device.get().strip() or source
-        if not vault or not source:
-            messagebox.showwarning("缺少来源", "请选择来源设备。")
+        if not vault:
+            return
+        time_window = CodexSyncApp._capture_sync_time_filter(self)
+        if time_window is None:
             return
         processes = running_codex_processes(os.getpid())
         if processes:
             names = ", ".join(f"{item.name} (PID {item.pid})" for item in processes)
             messagebox.showerror("需要退出相关程序", f"修复数据库前请退出 Codex、ChatGPT 和 Codex++。\n\n检测到：{names}")
             return
-        if not messagebox.askyesno("确认导入", "将保留一次完整撤销点、追加新会话，并按内容和时间自动合并差异后重建侧栏索引。是否继续？"):
+        if not messagebox.askyesno("确认导入", "将保留一次完整撤销点、仅追加本机没有的会话；已有会话的正文、标题、项目归属和工作目录全部保留。是否继续？"):
             return
         def work() -> str:
             if self.settings.auto_pull_before_import:
                 self._report_progress("正在拉取仓库最新内容")
                 self._checked_git(VaultGit(vault, proxy_url=self.settings.proxy_url).pull())
-            self._report_progress(f"正在分析来源设备 {source_label} 的会话")
-            plan = plan_import(self.settings.codex_path, vault, source)
+            self._report_progress("正在分析并合并仓库中的全部会话")
+            plan = plan_all_import(self.settings.codex_path, vault, progress=self._report_progress, **time_window)
             CodexSyncApp._apply_preview_title_overrides(self, plan)
+            if not any(item.action == "copy" for item in plan.items):
+                apply_import(plan)  # Still surface source verification failures.
+                return f"无新增会话；已保护本机会话：{plan.counts.get('skipped-existing', 0)}；按时间跳过：{plan.counts.get('skipped-time', 0)}"
             transaction = create_import_transaction(self.settings.codex_path, plan)
             try:
                 self._report_progress("正在合并会话内容")
                 result = apply_import(plan)
-                self._report_progress("正在修复标题和侧栏索引")
-                repair = repair_indexes(self.settings.codex_path, {}, create_backup=False, preferred_titles=plan.title_updates)
+                self._report_progress("正在登记新增会话的侧栏索引")
+                repair = register_new_sessions(self.settings.codex_path, result["copied"], preferred_titles=plan.title_updates)
                 finish_import_transaction(transaction, result["counts"])
                 prune_backup_history(self.settings.codex_path, keep=1)
             except Exception:
@@ -815,7 +781,8 @@ class CodexSyncApp(tk.Tk):
                 "结果：成功\n"
                 f"新增：{len(result['copied'])}\n"
                 f"自动合并：{len(result['merged'])}\n"
-                f"相同：{plan.counts.get('identical', 0)}\n"
+                f"已保护本机会话：{plan.counts.get('skipped-existing', 0)}\n"
+                f"按时间跳过：{plan.counts.get('skipped-time', 0)}\n"
                 f"标题更新：{len(plan.title_updates)}\n"
                 f"侧栏新增：{max(repair.inserted, repair.catalog_inserted)}\n"
                 "失败：0"
@@ -859,6 +826,8 @@ class CodexSyncApp(tk.Tk):
         self.import_tree.delete(*self.import_tree.get_children())
         rows = (
             ("copy", "新增", len(items_for_category(plan, "copy")), "本机不存在，将追加；点击查看"),
+            ("skipped-time", "按时间跳过", len(items_for_category(plan, "skipped-time")), "不在所选活动时间内；不会导入或删除"),
+            ("skipped-existing", "已保护本机会话", len(items_for_category(plan, "skipped-existing")), "保留原有正文、标题、项目归属和工作目录"),
             ("identical", "相同", len(items_for_category(plan, "identical")), "内容相同，无需处理；点击查看"),
             ("conflict", "自动合并", len(items_for_category(plan, "conflict")), "内容不同，将后台合并；点击查看三个版本"),
             ("failure", "失败", len(items_for_category(plan, "failure")), "缺少文件或校验失败；点击查看原因"),
@@ -866,6 +835,11 @@ class CodexSyncApp(tk.Tk):
         )
         for key, name, count, meaning in rows:
             self.import_tree.insert("", "end", iid=key, values=(name, count, meaning))
+        if hasattr(self, "workspace"):
+            if self.preview_pane is not None:
+                self.preview_pane.destroy()
+                self.preview_pane = None
+            self._render_studio_plan()
 
     def _apply_preview_title_overrides(self, plan: Any) -> int:
         overrides = getattr(self, "title_overrides", {}).get(plan.source_device, {})
@@ -898,21 +872,11 @@ class CodexSyncApp(tk.Tk):
             self._open_import_action(selection[0])
 
     def _open_import_action(self, category: str) -> None:
-        plan = self.active_plan
-        if plan is None:
-            messagebox.showinfo("尚未生成预览", "请先点击“预览导入”。")
+        if self.active_plan is None:
+            messagebox.showinfo("尚未生成预览", "请先点击“检查可导入会话”。")
             return
-        items = items_for_category(plan, category)
-        if not items:
-            messagebox.showinfo("没有对应内容", "该动作当前没有可预览的会话。")
-            return
-        ImportPreviewDialog(
-            self,
-            plan,
-            category,
-            self.title_overrides.get(plan.source_device, {}),
-            self._remember_title_override,
-        )
+        self.show_page("sync")
+        self._render_studio_plan(category)
 
     def _require_vault(self) -> Path | None:
         vault = self.settings.vault
@@ -960,11 +924,9 @@ class CodexSyncApp(tk.Tk):
         self.messages.put(("progress", text))
 
     def _set_task_state(self, text: str, *, active: bool, failed: bool = False) -> None:
-        if active:
-            self.task_progress.start(12)
-        else:
-            self.task_progress.stop()
-            self.task_progress.configure(value=0)
+        if not self.task_activity.winfo_manager():
+            self.task_activity.pack(fill='x', before=self.content, padx=22, pady=(8, 0))
+        self.task_activity.set_state(text, active=active, failed=failed)
         self._set_status_text(text, failed=failed)
         for window in self.winfo_children():
             if isinstance(window, OnboardingWizard):
@@ -992,7 +954,7 @@ class CodexSyncApp(tk.Tk):
                     self._busy = False
                     for button in self.task_buttons:
                         button.configure(state="normal")
-                    self._set_task_state("就绪", active=False)
+                    self._set_task_state(label + " · 已完成", active=False)
                     self.logger.info("完成：%s", label)
                     if callback:
                         callback(result) if callback_with_result else callback()
@@ -1005,7 +967,7 @@ class CodexSyncApp(tk.Tk):
                     self._busy = False
                     for button in self.task_buttons:
                         button.configure(state="normal")
-                    self._set_task_state("失败", active=False, failed=True)
+                    self._set_task_state(label + " · 失败，请查看错误详情", active=False, failed=True)
                     self.logger.error("%s 失败：%s\n%s", label, exc, error_trace)
                     if label == "刷新检查":
                         self.overview_tree.delete(*self.overview_tree.get_children())
@@ -1070,6 +1032,7 @@ class CodexSyncApp(tk.Tk):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Codex conversation synchronization desktop tool")
+    parser.add_argument("--export-documents", action="store_true", help="export text of documents referenced by all conversations; no push")
     parser.add_argument("--diagnose", action="store_true", help="print environment diagnostics and exit")
     parser.add_argument("--codex-home", type=Path, help="override Codex data directory for diagnostics")
     parser.add_argument("--vault", type=Path, help="override sync vault for diagnostics")
@@ -1094,6 +1057,18 @@ def main() -> None:
     args = build_parser().parse_args()
     store = SettingsStore()
     settings = store.load()
+    if args.export_documents:
+        configure_cli_output_encoding()
+        vault = args.vault or settings.vault
+        if vault is None:
+            raise SystemExit("请使用 --vault 指定文档文字副本的目标目录")
+        index = export_conversation_documents(args.codex_home or settings.codex_path, vault, settings.device_name)
+        failures = sum(item["status"] != "ok" for item in index["files"])
+        print(json.dumps({"sessions": index["sessions_scanned"], "documents": len(index["files"]) - failures,
+                          "failed": failures, "unresolved": len(index["unresolved"])}, ensure_ascii=False))
+        if failures or index["invalid_session_lines"]:
+            raise SystemExit(1)
+        return
     if args.diagnose:
         configure_cli_output_encoding()
         print(diagnostics_json(args.codex_home or settings.codex_path, args.vault or settings.vault, settings.proxy_url))
@@ -1174,6 +1149,14 @@ def main() -> None:
         if "preview smoke" not in dialog.preview_text.get("1.0", "end"):
             raise RuntimeError("Import preview did not render merged conversation text")
         dialog.destroy()
+        item.action = "copy"
+        item.incoming_content = item.merged_content
+        app._show_import_plan(plan)
+        app.update_idletasks()
+        if app.preview_pane.current_item is not item:
+            raise RuntimeError("Inline preview did not select the smoke-test session")
+        if "preview smoke" not in app.preview_pane.preview_text.get("1.0", "end"):
+            raise RuntimeError("Inline preview did not render conversation text")
         app.destroy()
         return
     if args.smoke_ui:

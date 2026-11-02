@@ -48,6 +48,9 @@ class ImportItem:
     task_id: str = ""
     source_title: str = ""
     local_title: str = ""
+    incoming_content: Optional[bytes] = None
+    activity_at: Optional[float] = None
+    project: dict = field(default_factory=dict)
 
 
 @dataclass

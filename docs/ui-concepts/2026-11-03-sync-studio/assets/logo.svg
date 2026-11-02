@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Codex Sync Desktop</title>
+  <desc id="desc">Two connected device nodes surrounded by cyan synchronization paths.</desc>
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101A38"/>
+      <stop offset="1" stop-color="#050816"/>
+    </linearGradient>
+    <linearGradient id="sync" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#67E8F9"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#panel)" stroke="#1D2B53" stroke-width="8"/>
+  <path d="M62 109C73 65 125 44 168 65c14 7 25 17 34 29" fill="none" stroke="#38BDF8" stroke-width="18" stroke-linecap="round"/>
+  <path d="m188 59 24 40-46 4z" fill="#38BDF8"/>
+  <path d="M194 147c-11 44-63 65-106 44-14-7-25-17-34-29" fill="none" stroke="#67E8F9" stroke-width="18" stroke-linecap="round"/>
+  <path d="m68 197-24-40 46-4z" fill="#67E8F9"/>
+  <rect x="46" y="98" width="58" height="46" rx="12" fill="#38BDF8"/>
+  <rect x="152" y="112" width="58" height="46" rx="12" fill="#67E8F9"/>
+  <circle cx="75" cy="121" r="8" fill="#050816"/>
+  <circle cx="181" cy="135" r="8" fill="#050816"/>
+</svg>

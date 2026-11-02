@@ -5,7 +5,7 @@
 <h1 align="center">Codex Sync Desktop</h1>
 
 <p align="center">
-  Synchronize, merge, and restore textual Codex sessions across Windows and macOS through a private GitHub repository owned by the user.
+  Synchronize and restore textual Codex sessions across Windows and macOS through a private GitHub repository owned by the user.
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
   <a href="./README.md">简体中文</a> · English
 </p>
 
-Codex Sync Desktop exports active textual Codex sessions without image or attachment binaries, stores one device directory in a private GitHub vault, verifies manifests, merges divergent content by semantic records and time, and repairs the target Codex SQLite/sidebar index.
+Codex Sync Desktop exports active textual Codex sessions without image or attachment binaries, stores one device directory in a private GitHub vault, verifies manifests, merges remote variants, and registers only sessions missing on this computer. Existing local content, titles, project membership, and working directories remain unchanged.
 
 > [!IMPORTANT]
 > The application source is public, but conversation vaults must remain private. Tokens, secrets, commands, tool output, reasoning text, and other sensitive textual content are preserved. Never submit real sessions or credentials to this repository, Issues, Discussions, or a public sync vault.
@@ -33,15 +33,15 @@ Codex Sync Desktop exports active textual Codex sessions without image or attach
 - Windows, Intel macOS, and Apple Silicon macOS support
 - Full textual records with media and binary attachments omitted
 - Cross-platform SHA-256 verification resilient to Git line-ending conversion
-- Content- and time-based merge instead of blind ID overwrite
+- Unified remote sessions with content- and time-based deduplication; existing local IDs are always skipped
 - Editable full import preview and title synchronization
-- SQLite and `session_index.jsonl` repair
+- Insert-only SQLite registration and append-only `session_index.jsonl` updates for newly imported sessions
 - Transaction backup, one-step rollback, and bounded logs/backups
 - Automatic recovery when a downloaded GitHub ZIP snapshot is selected instead of a real clone
 
 ## Quick Start
 
-Download a build from [Releases](https://github.com/cieyyy/codex-sync-desktop/releases), open the first-run wizard, sign in to GitHub, and select or create a private conversation vault. On another device, select the same repository and choose the source device in **Sync & Import**.
+Download a build from [Releases](https://github.com/cieyyy/codex-sync-desktop/releases), open the first-run wizard, sign in to GitHub, and select or create a private conversation vault. On another device, select the same repository and review the unified conversation list in **Sync & Import**. Filter by activity date, project, or title before importing.
 
 Close ChatGPT/Codex/Codex++ before an operation that imports sessions, repairs indexes, or rolls back an import. Pull, export, preview, login, and diagnostics do not require closing Codex.
 
@@ -66,3 +66,7 @@ See [Architecture](./docs/ARCHITECTURE.md), [Contributing](./CONTRIBUTING.md), a
 ## License
 
 [MIT License](./LICENSE)
+
+## v1.0.0 interface
+
+Use **外观** at the top right to switch between dark and light appearance; the preference is saved locally. Diagnostics have row and column dividers, alternating rows, and wrapped details. Task progress appears above the main content with the current stage and elapsed time. Repository setup uses themed segmented choices.

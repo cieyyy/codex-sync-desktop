@@ -16,10 +16,10 @@ class FirstRunWorkflowTests(TestCase):
     @patch("codex_sync_desktop.app.running_codex_processes", return_value=[])
     @patch("codex_sync_desktop.app.prune_backup_history")
     @patch("codex_sync_desktop.app.repair_indexes")
-    @patch("codex_sync_desktop.app.plan_import")
+    @patch("codex_sync_desktop.app.plan_all_import")
     @patch("codex_sync_desktop.app.export_sanitized_sessions")
     @patch("codex_sync_desktop.app.VaultGit")
-    def test_one_click_repairs_index_even_when_import_files_are_already_identical(
+    def test_one_click_preserves_indexes_when_no_new_sessions(
         self,
         mocked_git,
         mocked_export,
@@ -38,7 +38,6 @@ class FirstRunWorkflowTests(TestCase):
         mocked_git.return_value.commit_and_push.return_value = CommandResult(True, "pushed", 0)
         fake_app = SimpleNamespace(
             settings=SimpleNamespace(codex_path=Path("codex-home"), device_name="local-device", proxy_url=""),
-            source_device=SimpleNamespace(get=lambda: "source-device"),
             _require_vault=lambda: Path("vault"),
             _checked_git=Mock(),
             refresh_all=Mock(),
@@ -48,13 +47,8 @@ class FirstRunWorkflowTests(TestCase):
 
         CodexSyncApp.sync_once(fake_app)
 
-        mocked_repair.assert_called_once_with(
-            Path("codex-home"),
-            {},
-            create_backup=True,
-            preferred_titles={},
-        )
-        mocked_prune.assert_called_once_with(Path("codex-home"), keep=1)
+        mocked_repair.assert_not_called()
+        mocked_prune.assert_not_called()
 
     @patch("codex_sync_desktop.app.VaultGit")
     @patch("codex_sync_desktop.app.export_sanitized_sessions")
@@ -101,3 +95,18 @@ class FirstRunWorkflowTests(TestCase):
             CodexSyncApp._export_and_push_work(fake_app, Path(directory))
 
         mocked_git.return_value.commit_and_push.assert_not_called()
+
+    @patch("codex_sync_desktop.app.export_documents")
+    def test_configured_document_export_reports_errors(self, mocked_documents):
+        mocked_documents.return_value = {"files": [
+            {"status": "ok"},
+            {"status": "error", "project": "demo", "source": "bad.xls", "error": "旧格式"},
+        ]}
+        fake_app = SimpleNamespace(
+            settings=SimpleNamespace(document_roots={"demo": "project"}, device_name="Laptop"),
+            logger=Mock(), _report_progress=Mock(),
+        )
+        summary = CodexSyncApp._export_project_documents(fake_app, Path("vault"))
+        mocked_documents.assert_called_once_with(Path("vault"), "Laptop", {"demo": "project"})
+        self.assertIn("文档成功：1；文档失败：1", summary)
+        fake_app.logger.warning.assert_called_once()
