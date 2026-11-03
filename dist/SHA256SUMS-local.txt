@@ -1,1 +1,0 @@
-6d5ac8c62d7f0d85da8b5699660e970c14d906e3e4dc306491915bdcf3589ebd  dist/Codex-Sync-Desktop-macOS-Apple-Silicon-documents-local.dmg
