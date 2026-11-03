@@ -1,0 +1,1 @@
+bc10f77cfffe5c7a950c30bbb3545bd068a25f753cba9148ee8d8dfb385b61ec  dist/Codex-Sync-Desktop-macOS-Intel-new-only-local.dmg

@@ -1,0 +1,1 @@
+896c3482b8c10c75b60a62c57b7e7f87b6df270ad7ed7dbae3c1bd2b54eeb85d  dist/Codex-Sync-Desktop-macOS-Intel-project-sort-local.dmg

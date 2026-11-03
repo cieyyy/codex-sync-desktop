@@ -1,0 +1,1 @@
+5ea2cfb1a4379642d225ff2db9cf3d6d1cb25f549662b9f0c11a190a3ddfdbcf  dist/Codex-Sync-Desktop-macOS-Intel-all-sessions-local.dmg
