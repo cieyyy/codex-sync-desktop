@@ -13,6 +13,7 @@ from .import_preview_dialog import ImportPreviewPane
 from .ui_theme import COLORS
 from .task_activity import TaskActivity
 from .diagnostic_table import DiagnosticTable
+from .appearance_switch import AppearanceSwitch
 from .window_chrome import bundled_asset_path, draw_sync_mark
 
 
@@ -99,13 +100,12 @@ class StudioUI:
         self.repo_label.pack(side='bottom',anchor='w',padx=8,pady=(12,0))
         main=ttk.Frame(shell)
         main.grid(row=0,column=1,sticky='nsew')
-        top=ttk.Frame(main,padding=(26,12))
+        top=ttk.Frame(main,padding=(26,9))
         top.pack(fill='x')
         self.page_label=ttk.Label(top,text='工作区 / 概览',style='Muted.TLabel');self.page_label.pack(side='left')
         self.appearance_var=tk.StringVar(value='浅色' if self.settings.appearance=='light' else '深色')
-        theme=ttk.Combobox(top,textvariable=self.appearance_var,values=('深色','浅色'),width=5,state='readonly',takefocus=True)
-        theme.pack(side='right',padx=(14,0));theme.bind('<<ComboboxSelected>>',lambda _event:self.change_appearance())
-        ttk.Label(top,text='外观',style='Muted.TLabel').pack(side='right',padx=(14,0))
+        self.appearance_switch=AppearanceSwitch(top,self.appearance_var,self.change_appearance)
+        self.appearance_switch.pack(side='right',padx=(18,0))
         self.connection_label=ttk.Label(top,text='正在检查',style='Muted.TLabel');self.connection_label.pack(side='right')
         ttk.Separator(main).pack(fill='x')
         self.task_activity=TaskActivity(main)

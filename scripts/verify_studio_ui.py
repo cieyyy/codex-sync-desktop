@@ -59,6 +59,27 @@ app._set_task_state('正在检查可导入会话',active=True)
 assert app.task_activity.started == started
 assert app.task_activity.bar.winfo_ismapped()
 capture('progress-dark.png')
+def capture_switch(name):
+ app.update()
+ switch=app.appearance_switch
+ rect=f'{switch.winfo_rootx()-115},{switch.winfo_rooty()-8},{switch.winfo_width()+135},{switch.winfo_height()+16}'
+ subprocess.run(['screencapture','-x','-R'+rect,str(root/name)],check=True)
+capture_switch('theme-icons-dark.png')
+app.appearance_switch.buttons['sun'].invoke();app.update()
+assert app.store.load().appearance=='light'
+capture_switch('theme-icons-light.png')
+app.appearance_switch.buttons['moon'].invoke();app.update()
+assert app.store.load().appearance=='dark'
+app.focus_force();app.appearance_switch.buttons['moon'].focus_set();app.update()
+app.appearance_switch.buttons['moon'].event_generate('<Left>');app.update()
+assert app.store.load().appearance=='light'
+app.appearance_switch.buttons['sun'].event_generate('<Right>');app.update()
+assert app.store.load().appearance=='dark'
+app.appearance_switch._schedule_tooltip(app.appearance_switch.buttons['sun'],'浅色模式')
+app.after(550);app.update()
+assert app.appearance_switch.tooltip.winfo_exists()
+app.appearance_switch._hide_tooltip();assert app.appearance_switch.tooltip is None
+assert all(child.winfo_class()!='TCombobox' for child in app.appearance_switch.winfo_children())
 for theme in ('浅色','深色','浅色'):
  app.appearance_var.set(theme);app.change_appearance();app.update()
  assert pane.title_var.get()=='主题切换保留未保存标题'

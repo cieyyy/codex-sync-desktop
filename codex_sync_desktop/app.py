@@ -278,6 +278,7 @@ class CodexSyncApp(StudioUI, tk.Tk):
         set_palette(appearance)
         self._configure_styles()
         recolor_widgets(self, previous)
+        self.appearance_switch.refresh()
         self.settings.appearance = appearance
         self.store.save(self.settings)
 

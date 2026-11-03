@@ -12,7 +12,7 @@
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-%3E%3D3.9-3776AB.svg">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-36BFFA.svg">
-  <img alt="Release" src="https://img.shields.io/badge/release-v1.0.0-2457E6.svg">
+  <img alt="Release" src="https://img.shields.io/badge/release-v1.0.1-2457E6.svg">
 </p>
 
 <p align="center">
@@ -164,6 +164,8 @@ python -m unittest discover -s tests -v
 
 采用中性深灰与青色强调的 Sync Studio 布局：概览显示实际环境和最近备份，同步页常驻会话列表与只读对话预览，支持项目与标题筛选、活动时间排序、导入标题暂存。时间范围变更后会清除旧预览并要求重新检查。
 
-右上角“外观”可切换深色／浅色并记住偏好。环境检查采用行列分隔和交替行底色；任务进度置顶显示当前阶段及已用时间，配置向导的仓库选择统一为主题分段控件。
+右上角太阳图标切换浅色，月亮图标切换深色，并记住偏好。环境检查采用行列分隔和交替行底色；任务进度置顶显示当前阶段及已用时间，配置向导的仓库选择统一为主题分段控件。
 
 设计规范见 [DESIGN.md](./DESIGN.md)，版本与验证说明见 [v1.0.0](./docs/releases/v1.0.0.md)。
+
+[v1.0.1 图标主题切换修订](./docs/releases/v1.0.1.md)。

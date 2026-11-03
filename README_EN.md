@@ -69,4 +69,4 @@ See [Architecture](./docs/ARCHITECTURE.md), [Contributing](./CONTRIBUTING.md), a
 
 ## v1.0.0 interface
 
-Use **外观** at the top right to switch between dark and light appearance; the preference is saved locally. Diagnostics have row and column dividers, alternating rows, and wrapped details. Task progress appears above the main content with the current stage and elapsed time. Repository setup uses themed segmented choices.
+Click the sun for light appearance or the moon for dark appearance at the top right; the preference is saved locally. Diagnostics have row and column dividers, alternating rows, and wrapped details. Task progress appears above the main content with the current stage and elapsed time. Repository setup uses themed segmented choices.
