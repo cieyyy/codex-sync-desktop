@@ -19,6 +19,7 @@ class SessionInfo:
     model_provider: str = "openai"
     cli_version: str = ""
     archived: bool = False
+    history_mode: str = "legacy"
 
 
 @dataclass

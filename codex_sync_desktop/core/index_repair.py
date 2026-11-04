@@ -61,6 +61,7 @@ def parse_session(path: Path, codex_home: Path, mappings: Mapping[str, str] | No
         model_provider=str(metadata.get("model_provider") or "openai"),
         cli_version=str(metadata.get("cli_version") or ""),
         archived="archived_sessions" in path.parts,
+        history_mode=str(metadata.get("history_mode") or "legacy"),
     )
 
 
@@ -160,7 +161,7 @@ def _insert_thread(connection: sqlite3.Connection, columns: set[str], session: S
         "preview": session.preview,
         "recency_at": session.updated_at,
         "recency_at_ms": session.updated_at * 1000,
-        "history_mode": "legacy",
+        "history_mode": session.history_mode,
         "name": session.title,
     }
     selected = {key: value for key, value in values.items() if key in columns}

@@ -228,7 +228,10 @@ class StudioUI:
         self.import_summary=ttk.Label(footer,text='先检查会话，再核对导入范围。',style='Muted.TLabel');self.import_summary.pack(side='left')
         self.import_button=self._task_button(footer,'导入会话',self.import_and_repair,'Accent.TButton');self.import_button.pack(side='right')
         self._task_button(footer,'一键同步',self.sync_once).pack(side='right',padx=8)
-        ttk.Label(self.sync_tab,text='预览无需退出 Codex；正式导入前需退出相关程序，并自动保留一次撤销点。',style='Muted.TLabel').pack(side='bottom',anchor='w',pady=(8,0))
+        process_row=ttk.Frame(self.sync_tab);process_row.pack(side='bottom',fill='x',pady=(6,0))
+        self.exit_process_button=self._task_button(process_row,'一键退出相关进程',self.exit_related_processes,'Detail.TButton')
+        self.exit_process_button.pack(side='left')
+        ttk.Label(process_row,text='预览无需退出；导入前退出 Codex / ChatGPT',style='Muted.TLabel').pack(side='left',padx=10)
         self.category_bar=ttk.Frame(self.sync_tab);self.category_bar.pack(fill='x',pady=(0,8))
         self.category_buttons={}
         for key,title in (('copy','可导入'),('skipped-existing','本机已保护'),('skipped-time','按时间跳过'),('failure','校验失败')):

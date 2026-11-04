@@ -325,7 +325,7 @@ class GitPushRecoveryTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(
             mocked_run.call_args_list[-1].args[0],
-            ["git", "-c", "http.version=HTTP/1.1", "push"],
+            ["git", "-c", "http.version=HTTP/1.1", "-c", "http.postBuffer=16777216", "push"],
         )
 
 

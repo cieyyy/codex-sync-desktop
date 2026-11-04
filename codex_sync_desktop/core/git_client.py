@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .proxy import proxy_environment
+
 import os
 import re
 import shutil
@@ -144,6 +146,10 @@ def summarize_pull(output: str) -> str:
 def compact_failure_reason(output: str, fallback: str = "Git 命令执行失败") -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     lowered = output.lower()
+    if "未完成的 rebase" in output or "rebase in progress" in lowered or "rebase-merge" in lowered:
+        return "同步仓库有未完成的 rebase；请先完成或中止该操作，再重新检查。软件未自动切换分支或丢弃改动。"
+    if "not currently on a branch" in lowered or "detached head" in lowered:
+        return "同步仓库处于分离 HEAD 状态；请先切换到同步分支（例如 main）后重试。软件未自动切换分支或覆盖本地改动。"
     if "non-fast-forward" in lowered or "fetch first" in lowered:
         return "远端已有新提交，请先拉取仓库后重试。"
     if "authentication failed" in lowered or "permission denied" in lowered:
@@ -218,12 +224,8 @@ def command_environment(
     elif selected_platform == "win32":
         entries = [*windows_registry_command_paths(), *windows_command_paths(env), *entries]
     env["PATH"] = path_separator.join(dict.fromkeys(entries))
-    if proxy_url:
-        env["HTTP_PROXY"] = proxy_url
-        env["HTTPS_PROXY"] = proxy_url
-        env["http_proxy"] = proxy_url
-        env["https_proxy"] = proxy_url
-    return env
+    return proxy_environment(env, proxy_url, selected_platform)
+
 
 
 def command_available(name: str) -> bool:
@@ -277,6 +279,13 @@ class VaultGit:
         return result
 
     def pull(self) -> CommandResult:
+        git_dir = self.path / ".git"
+        if git_dir.is_file():
+            pointer = git_dir.read_text(errors="replace").strip()
+            if pointer.startswith("gitdir:"):
+                git_dir = (self.path / pointer[7:].strip()).resolve()
+        if (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists():
+            return CommandResult(False, "同步仓库有未完成的 rebase；请先完成或中止该操作，再重新检查。", 1)
         result = run(["git", "pull", "--rebase", "--autostash"], self.path, timeout=300, proxy_url=self.proxy_url)
         if not result.ok and is_repository_access_failure(result.output):
             repair = self._repair_github_access()
@@ -366,7 +375,9 @@ class VaultGit:
         if push.ok or not is_transient_push_failure(push.output):
             return push
 
-        retry = run(["git", "-c", "http.version=HTTP/1.1", "push"], self.path, timeout=600, proxy_url=self.proxy_url)
+        # Buffer typical sync packs to avoid chunked uploads rejected by some
+        # HTTP proxies. Larger packs can still stream when this limit is exceeded.
+        retry = run(["git", "-c", "http.version=HTTP/1.1", "-c", "http.postBuffer=16777216", "push"], self.path, timeout=600, proxy_url=self.proxy_url)
         if retry.ok:
             return retry
         combined = "\n".join(part for part in (push.output, "HTTP/1.1 retry:", retry.output) if part)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .proxy import resolve_proxies
+
 import hashlib
 import json
 import os
@@ -88,6 +90,7 @@ def detect_system_proxy() -> str:
 
 def check_github_connectivity(proxy_url: str = "", timeout: int = 12) -> ConnectivityResult:
     proxy = validate_proxy_url(proxy_url)
+    effective_proxy = bool(resolve_proxies(proxy).get("https") or resolve_proxies(proxy).get("all"))
     handlers = _url_handlers(proxy)
     opener = urllib.request.build_opener(*handlers)
     request = urllib.request.Request(
@@ -97,7 +100,7 @@ def check_github_connectivity(proxy_url: str = "", timeout: int = 12) -> Connect
     try:
         with opener.open(request, timeout=timeout) as response:
             status = int(getattr(response, "status", 200))
-        return ConnectivityResult(200 <= status < 400, status, proxy_used=bool(proxy))
+        return ConnectivityResult(200 <= status < 400, status, proxy_used=effective_proxy)
     except urllib.error.HTTPError as exc:
         status = exc.code
         with exc:
@@ -117,17 +120,17 @@ def check_github_connectivity(proxy_url: str = "", timeout: int = 12) -> Connect
             reason = "GitHub 未登录接口请求额度已用尽，可继续登录以使用账号额度。"
             if not reachable:
                 reason += "网页连通性检查也未通过，请稍后重试。"
-            return ConnectivityResult(reachable, status, reason, bool(proxy), api_limited=True)
-        return ConnectivityResult(False, status, f"GitHub 返回 HTTP {status}：{exc.reason}；请检查访问权限或网络出口策略。", bool(proxy))
+            return ConnectivityResult(reachable, status, reason, effective_proxy, api_limited=True)
+        return ConnectivityResult(False, status, f"GitHub 返回 HTTP {status}：{exc.reason}；请检查访问权限或网络出口策略。", effective_proxy)
     except (OSError, urllib.error.URLError) as exc:
         reason = str(getattr(exc, "reason", None) or str(exc))
         if "CERTIFICATE_VERIFY_FAILED" in reason:
             reason = "TLS 证书校验失败：代理返回的证书不受内置可信 CA 认可；请检查代理 HTTPS/证书设置，不要关闭证书校验"
-        return ConnectivityResult(False, reason=reason, proxy_used=bool(proxy))
+        return ConnectivityResult(False, reason=reason, proxy_used=effective_proxy)
 
 
 def _url_handlers(proxy: str) -> list[urllib.request.BaseHandler]:
-    proxy_handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy}) if proxy else urllib.request.ProxyHandler({})
+    proxy_handler = urllib.request.ProxyHandler(resolve_proxies(proxy))
     ca_file = _trusted_ca_file()
     tls_context = ssl.create_default_context(cafile=ca_file) if ca_file else ssl.create_default_context()
     return [proxy_handler, urllib.request.HTTPSHandler(context=tls_context)]

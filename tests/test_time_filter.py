@@ -55,7 +55,7 @@ class TimeFilterTests(TestCase):
             self.assertNotIn('old-only', plan.title_updates)
             result = apply_import(plan)
             self.assertEqual(len(result['copied']), 1)
-            self.assertEqual(result['copied'][0].name, 'rollout-recent-active.jsonl')
+            self.assertRegex(result['copied'][0].name, r'^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-recent-active\.jsonl$')
             # Filtering does not remove the old conversation from the repository.
             self.assertTrue(path.exists())
             self.assertEqual(plan_all_import(home, vault).counts, {'copy': 1, 'skipped-existing': 1})

@@ -35,7 +35,7 @@ from .core.git_client import VaultGit, compact_failure_reason, summarize_pull
 from .core.import_preview import apply_title_overrides, items_for_category
 from .core.index_repair import repair_indexes, register_new_sessions
 from .core.onboarding import validate_proxy_url
-from .core.processes import running_codex_processes
+from .core.processes import running_codex_processes, terminate_related_processes
 from .core.sessions import apply_import, export_sanitized_sessions, plan_all_import, repository_session_summary
 from .import_preview_dialog import ImportPreviewDialog
 from .studio_ui import StudioUI, apply_studio_styles
@@ -373,7 +373,7 @@ class CodexSyncApp(StudioUI, tk.Tk):
             "proxy_url": tk.StringVar(value=self.settings.proxy_url),
         }
         ttk.Label(panel, text="同步设置", style="PanelSection.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        labels = (("codex_home", "Codex 数据目录"), ("vault_path", "本地同步仓库"), ("vault_remote", "GitHub 仓库地址"), ("device_name", "设备名称"), ("proxy_url", "HTTP 代理（可选）"))
+        labels = (("codex_home", "Codex 数据目录"), ("vault_path", "本地同步仓库"), ("vault_remote", "GitHub 仓库地址"), ("device_name", "设备名称"), ("proxy_url", "代理（留空跟随系统）"))
         for row, (key, label) in enumerate(labels):
             grid_row = row + 1
             ttk.Label(panel, text=label, style="Panel.TLabel", width=16).grid(row=grid_row, column=0, sticky="w", pady=5)
@@ -662,6 +662,38 @@ class CodexSyncApp(StudioUI, tk.Tk):
             self.logger.warning("文档提取失败：%s/%s：%s", item["project"], item["source"], item["error"])
         return f"文档成功：{len(index['files']) - len(failures)}；文档失败：{len(failures)}"
 
+    def _offer_process_exit(self, processes) -> None:
+        # Keep one confirmation for both the toolbar and the blocked import path.
+        self.exit_related_processes()
+
+    def exit_related_processes(self) -> None:
+        try:
+            processes = running_codex_processes(os.getpid(), strict=True)
+        except RuntimeError as exc:
+            messagebox.showerror("进程检测失败", str(exc))
+            return
+        if not processes:
+            messagebox.showinfo("无需退出", "未检测到 Codex / ChatGPT 相关进程，可以继续导入。")
+            return
+        if not messagebox.askyesno(
+            "退出相关进程",
+            f"将退出 {len(processes)} 个 Codex、ChatGPT、Codex++ 及相关后台进程。\n\n"
+            "正在生成的回复和未保存内容可能中断，请先保存。先请求退出，3 秒后仍未退出的进程将强制终止。\n"
+            "本同步软件会继续运行；完成后请重新点击导入，不会自动写入会话。\n\n是否继续？",
+        ):
+            return
+        self._run_task("退出相关进程", lambda: terminate_related_processes(os.getpid()),
+                       self._show_process_exit_result, callback_with_result=True)
+
+    def _show_process_exit_result(self, report) -> None:
+        if report.remaining:
+            names = "\n".join(f"{Path(p.name).name}（PID {p.pid}）" for p in report.remaining[:8])
+            messagebox.showwarning("仍有进程运行", "仍有相关进程未退出，请手动处理后重试：\n" + names)
+        else:
+            messagebox.showinfo("相关进程已退出", "可以重新点击“导入会话”或执行撤销。")
+        for error in report.errors:
+            self.logger.warning("退出进程：%s", error)
+
     def sync_once(self) -> None:
         vault = self._require_vault()
         if not vault:
@@ -672,8 +704,7 @@ class CodexSyncApp(StudioUI, tk.Tk):
         local_device = device_slug(self.settings.device_name)
         processes = running_codex_processes(os.getpid())
         if processes:
-            names = ", ".join(f"{item.name} (PID {item.pid})" for item in processes)
-            messagebox.showerror("需要退出相关程序", f"一键同步包含导入和索引修复，请先退出 Codex、ChatGPT 和 Codex++。\n\n检测到：{names}")
+            CodexSyncApp._offer_process_exit(self, processes)
             return
         description = "拉取仓库、仅导入本机缺少的会话、保留已有会话，再上传本机会话"
         if not messagebox.askyesno("确认一键同步", description + "。是否继续？"):
@@ -751,8 +782,7 @@ class CodexSyncApp(StudioUI, tk.Tk):
             return
         processes = running_codex_processes(os.getpid())
         if processes:
-            names = ", ".join(f"{item.name} (PID {item.pid})" for item in processes)
-            messagebox.showerror("需要退出相关程序", f"修复数据库前请退出 Codex、ChatGPT 和 Codex++。\n\n检测到：{names}")
+            CodexSyncApp._offer_process_exit(self, processes)
             return
         if not messagebox.askyesno("确认导入", "将保留一次完整撤销点、仅追加本机没有的会话；已有会话的正文、标题、项目归属和工作目录全部保留。是否继续？"):
             return
@@ -793,7 +823,7 @@ class CodexSyncApp(StudioUI, tk.Tk):
     def undo_latest_import(self) -> None:
         processes = running_codex_processes(os.getpid())
         if processes:
-            messagebox.showerror("需要退出相关程序", "撤销前请退出 Codex、ChatGPT 和 Codex++。")
+            CodexSyncApp._offer_process_exit(self, processes)
             return
         transaction = latest_reversible_transaction(self.settings.codex_path)
         if not transaction:

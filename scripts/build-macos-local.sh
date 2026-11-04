@@ -17,9 +17,9 @@ import plistlib
 from pathlib import Path
 path = Path('dist/Codex Sync Desktop.app/Contents/Info.plist')
 data = plistlib.loads(path.read_bytes())
-data['CFBundleShortVersionString'] = '1.0.1'
-data['CFBundleVersion'] = '1.0.1.1'
-data['CodexSyncLocalBuild'] = '1.0.1'
+data['CFBundleShortVersionString'] = '1.0.3'
+data['CFBundleVersion'] = '1.0.3.1'
+data['CodexSyncLocalBuild'] = '1.0.3'
 path.write_bytes(plistlib.dumps(data))
 PY
 xattr -cr 'dist/Codex Sync Desktop.app'
@@ -32,7 +32,7 @@ codesign --verify --deep --strict 'dist/Codex Sync Desktop.app'
 STAGING_DIR="$(mktemp -d "$PROJECT_ROOT/build/macos-dmg.XXXXXX")"
 ditto 'dist/Codex Sync Desktop.app' "$STAGING_DIR/Codex Sync Desktop.app"
 ln -s /Applications "$STAGING_DIR/Applications"
-PACKAGE_PATH="dist/Codex-Sync-Desktop-v1.0.1-macOS-local.dmg"
+PACKAGE_PATH="dist/Codex-Sync-Desktop-v1.0.3-macOS-local.dmg"
 hdiutil create -volname 'Codex Sync Desktop' -srcfolder "$STAGING_DIR" -ov -format UDZO "$PACKAGE_PATH"
 hdiutil verify "$PACKAGE_PATH"
-shasum -a 256 "$PACKAGE_PATH" > dist/SHA256SUMS-v1.0.1-local.txt
+shasum -a 256 "$PACKAGE_PATH" > dist/SHA256SUMS-v1.0.3-local.txt

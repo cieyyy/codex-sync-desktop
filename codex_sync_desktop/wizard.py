@@ -210,8 +210,8 @@ class OnboardingWizard(tk.Toplevel):
         ).pack(anchor="w", pady=(24, 0))
 
     def _network_page(self, page: ttk.Frame) -> None:
-        self._heading(page, "检查 GitHub 网络连接", "可直接访问 GitHub 时无需代理；只有当前网络需要代理时才勾选下方选项并填写地址。")
-        self._checkmark(page, "当前网络需要使用代理（不勾选则直接连接）", self.china_mode).pack(anchor="w", pady=(0, 14))
+        self._heading(page, "检查 GitHub 网络连接", "默认跟随系统 HTTP/HTTPS 代理；需要覆盖系统设置时，勾选手动代理并填写地址。")
+        self._checkmark(page, "手动指定代理（不勾选则跟随系统代理）", self.china_mode).pack(anchor="w", pady=(0, 14))
         form = ttk.Frame(page, style="Panel.TFrame")
         form.pack(fill="x")
         ttk.Label(form, text="本机代理地址", style="Panel.TLabel", width=16).grid(row=0, column=0, sticky="w")
@@ -439,7 +439,7 @@ class OnboardingWizard(tk.Toplevel):
             return ""
         proxy = validate_proxy_url(self.proxy_url.get())
         if not proxy:
-            raise ValueError("已选择使用代理，请填写本机代理地址；如需直连，请取消勾选。")
+            raise ValueError("已选择使用代理，请填写本机代理地址；如需跟随系统，请取消勾选。")
         return proxy
 
     def _detect_proxy(self) -> None:

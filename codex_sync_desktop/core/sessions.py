@@ -289,6 +289,60 @@ def repository_session_summary(vault: Path) -> tuple[int, str]:
     return len(identities), latest
 
 
+def imported_rollout_path(codex_home: Path, source: Path, identity: str) -> Path:
+    """Keep the timestamp required by Codex's paginated rollout reader."""
+    safe_id = identity if re.fullmatch(r"[\w-]+", identity) else hashlib.sha256(identity.encode()).hexdigest()
+    for record in _read_records(source):
+        if record.get("type") != "session_meta":
+            continue
+        raw = str((record.get("payload") or {}).get("timestamp") or record.get("timestamp") or "")
+        try:
+            stamp = datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%Y-%m-%dT%H-%M-%S")
+        except ValueError:
+            break
+        return codex_home / "sessions/synced" / f"rollout-{stamp}-{safe_id}.jsonl"
+    match = re.match(r"rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-", source.name)
+    if match:
+        return codex_home / "sessions/synced" / f"rollout-{match[1]}-{safe_id}.jsonl"
+    raise ValueError(f"会话缺少有效创建时间，无法生成 Codex 可读取的文件名：{identity}")
+
+
+def standalone_import_records(records: list[Dict[str, Any]], sources: Iterable[Path]) -> list[Dict[str, Any]]:
+    """Detach merged history from source byte offsets only when its sources exist."""
+    available = set()
+    bases = set()
+    has_root = False
+    paginated = False
+    for source in sources:
+        available.update(re.findall(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", source.name, re.I))
+        for record in _read_records(source):
+            if record.get("type") != "session_meta":
+                continue
+            payload = record.get("payload") or {}
+            paginated = paginated or payload.get("history_mode") == "paginated"
+            available.add(str(payload.get("id") or ""))
+            base = payload.get("history_base") or {}
+            if base.get("thread_id"):
+                bases.add(str(base["thread_id"]))
+            else:
+                has_root = True
+    if bases - available:
+        raise ValueError("会话历史分片不完整，已停止导入：" + ", ".join(sorted(bases - available)))
+    if bases and not has_root:
+        raise ValueError("会话历史缺少起始分片，已停止导入")
+    result = []
+    for ordinal, record in enumerate(records):
+        if paginated:
+            record = {**record, "ordinal": ordinal}
+        if record.get("type") == "session_meta":
+            payload = dict(record.get("payload") or {})
+            payload["history_mode"] = "paginated" if paginated else "legacy"
+            payload.pop("history_base", None)
+            record = {**record, "payload": payload}
+        result.append(record)
+    return result
+
+
 def plan_all_import(codex_home: Path, vault: Path, progress: Callable[[str], None] | None = None,
                     *, activity_since: float | None = None, activity_before: float | None = None) -> ImportPlan:
     """Verify all sources, then produce one reversible import item per real session ID."""
@@ -366,10 +420,10 @@ def plan_all_import(codex_home: Path, vault: Path, progress: Callable[[str], Non
             encoded, _ = _merge_records(incoming, _read_records(path))
             incoming = [json.loads(line) for line in encoded.splitlines()]
             seen.add(digest)
+        incoming = standalone_import_records(incoming, (copy[0] for copy in copies))
         incoming_bytes = b"".join((json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
                                   for record in incoming)
-        safe_id = identity if re.fullmatch(r"[\w-]+", identity) else hashlib.sha256(identity.encode()).hexdigest()
-        destination = codex_home / "sessions/synced" / f"rollout-{safe_id}.jsonl"
+        destination = imported_rollout_path(codex_home, source, identity)
         if destination.exists():
             raise FileExistsError(f"导入目标已存在，已停止以保护本机文件：{destination}")
         action = "copy"

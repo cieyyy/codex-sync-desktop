@@ -1,0 +1,1 @@
+18637cd9176f3f22ac4e554dd72e9817818bf5df615ab5eaa2acea29dab7b463  dist/Codex-Sync-Desktop-v1.0.3-macOS-Intel.dmg

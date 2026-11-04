@@ -1,0 +1,47 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index a1d7aca..7c2f8a3 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -14,14 +14,17 @@ jobs:
+             artifact: Codex-Sync-Desktop-Windows
+             icon: assets/icon.ico
+             icon_data: "assets/icon.ico;assets"
++            logo_data: "assets/icon.png;assets"
+           - os: macos-15-intel
+             artifact: Codex-Sync-Desktop-macOS-Intel
+             icon: assets/icon.icns
+             icon_data: "assets/icon.icns:assets"
++            logo_data: "assets/icon.png:assets"
+           - os: macos-14
+             artifact: Codex-Sync-Desktop-macOS-Apple-Silicon
+             icon: assets/icon.icns
+             icon_data: "assets/icon.icns:assets"
++            logo_data: "assets/icon.png:assets"
+     runs-on: ${{ matrix.os }}
+     steps:
+       - uses: actions/checkout@v5
+@@ -29,9 +32,9 @@ jobs:
+         with:
+           python-version: "3.11"
+           cache: pip
+-      - run: python -m pip install pyinstaller==6.14.2 certifi pillow
++      - run: python -m pip install . pyinstaller==6.14.2 pillow
+       - run: python scripts/generate_icons.py
+-      - run: pyinstaller --noconfirm --clean --windowed --icon "${{ matrix.icon }}" --add-data "${{ matrix.icon_data }}" --name "Codex Sync Desktop" launch.py
++      - run: pyinstaller --noconfirm --clean --windowed --icon "${{ matrix.icon }}" --add-data "${{ matrix.icon_data }}" --add-data "${{ matrix.logo_data }}" --name "Codex Sync Desktop" launch.py
+       - name: Smoke test Windows app
+         if: runner.os == 'Windows'
+         shell: pwsh
+@@ -61,6 +64,12 @@ jobs:
+           if ($previewSmoke.ExitCode -ne 0) { throw "Installed import preview smoke test failed with exit code $($previewSmoke.ExitCode)" }
+           $uninstaller = Start-Process -FilePath "$installDir\unins000.exe" -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+           if ($uninstaller.ExitCode -ne 0) { throw "Uninstaller failed with exit code $($uninstaller.ExitCode)" }
++      - name: Stamp and sign macOS app
++        if: runner.os == 'macOS'
++        run: |
++          python scripts/stamp_macos_bundle.py "dist/Codex Sync Desktop.app"
++          codesign --force --deep --sign - "dist/Codex Sync Desktop.app"
++          codesign --verify --deep --strict "dist/Codex Sync Desktop.app"
+       - name: Smoke test macOS app
+         if: runner.os == 'macOS'
+         run: |
